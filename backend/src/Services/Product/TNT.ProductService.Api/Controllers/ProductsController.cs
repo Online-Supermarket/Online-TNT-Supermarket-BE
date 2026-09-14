@@ -7,7 +7,6 @@ namespace TNT.ProductService.Api.Controllers;
 
 [ApiController]
 [Route("api/products")]
-[AllowAnonymous]
 [Produces("application/json")]
 public class ProductsController : ControllerBase
 {
@@ -19,6 +18,19 @@ public class ProductsController : ControllerBase
         _productService = productService;
     }
 
+    [HttpGet("{id:guid}")]
+    [AllowAnonymous]
+    [ProducesResponseType(typeof(ProductResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ProductResponse>> GetProduct(Guid id, CancellationToken ct)
+    {
+        var product = await _productService.GetProductAsync(id, ct);
+        if (product == null) return NotFound(new { message = "Product not found." });
+
+        return Ok(product);
+    }
+
+    [AllowAnonymous]
     [HttpGet]
     [ProducesResponseType(typeof(ProductListResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -51,5 +63,48 @@ public class ProductsController : ControllerBase
         var result = await _productService.GetProductsAsync(
             search, category, minPrice, maxPrice, available, sortBy, sortOrder, page, pageSize, ct);
         return Ok(result);
+    }
+
+    [HttpPost]
+    [Authorize(Roles = "Admin,Staff")]
+    [ProducesResponseType(typeof(ProductResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<ProductResponse>> CreateProduct([FromBody] ProductRequest request, CancellationToken ct)
+    {
+        try
+        {
+            var created = await _productService.CreateProductAsync(request, ct);
+            return CreatedAtAction(nameof(GetProduct), new { id = created.Id }, created);
+        }
+        catch (InvalidProductCategoryException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPut("{id:guid}")]
+    [Authorize(Roles = "Admin,Staff")]
+    [ProducesResponseType(typeof(ProductResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ProductResponse>> UpdateProduct(Guid id, [FromBody] ProductRequest request, CancellationToken ct)
+    {
+        ProductResponse? updated;
+        try
+        {
+            updated = await _productService.UpdateProductAsync(id, request, ct);
+        }
+        catch (InvalidProductCategoryException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+
+        if (updated == null) return NotFound(new { message = "Product not found." });
+
+        return Ok(updated);
     }
 }

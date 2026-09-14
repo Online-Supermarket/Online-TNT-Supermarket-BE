@@ -1,16 +1,28 @@
 using Microsoft.EntityFrameworkCore;
 using TNT.ProductService.Api.Data;
 using TNT.ProductService.Api.DTOs;
+using TNT.ProductService.Api.Entities;
 
 namespace TNT.ProductService.Api.Services;
 
 public class ProductService
 {
     private readonly ProductDbContext _db;
+    private readonly ILogger<ProductService> _logger;
 
-    public ProductService(ProductDbContext db)
+    public ProductService(ProductDbContext db, ILogger<ProductService> logger)
     {
         _db = db;
+        _logger = logger;
+    }
+
+    public async Task<ProductResponse?> GetProductAsync(Guid id, CancellationToken ct = default)
+    {
+        var product = await _db.Products.AsNoTracking()
+            .Include(item => item.Category)
+            .FirstOrDefaultAsync(item => item.Id == id, ct);
+
+        return product == null ? null : MapToResponse(product);
     }
 
     public async Task<ProductListResponse> GetProductsAsync(
@@ -27,6 +39,7 @@ public class ProductService
     {
         var query = _db.Products
             .AsNoTracking()
+            .Include(product => product.Category)
             .Where(product => product.IsActive);
 
         if (!string.IsNullOrWhiteSpace(search))
@@ -70,6 +83,7 @@ public class ProductService
             .Select(product => new ProductResponse
             {
                 Id = product.Id,
+                CategoryId = product.CategoryId,
                 Name = product.Name,
                 Description = product.Description,
                 Price = product.Price,
@@ -90,4 +104,86 @@ public class ProductService
             PageSize = pageSize
         };
     }
+
+    public async Task<ProductResponse> CreateProductAsync(ProductRequest request, CancellationToken ct = default)
+    {
+        await ValidateCategoryAsync(request.CategoryId, ct);
+
+        var product = new Product
+        {
+            Id = Guid.NewGuid(),
+            CreatedAtUtc = DateTime.UtcNow
+        };
+
+        ApplyRequest(product, request);
+        _db.Products.Add(product);
+        await _db.SaveChangesAsync(ct);
+
+        await _db.Entry(product).Reference(item => item.Category).LoadAsync(ct);
+        _logger.LogInformation("Created product {ProductId} named {ProductName}", product.Id, product.Name);
+        return MapToResponse(product);
+    }
+
+    public async Task<ProductResponse?> UpdateProductAsync(Guid id, ProductRequest request, CancellationToken ct = default)
+    {
+        var product = await _db.Products
+            .Include(item => item.Category)
+            .FirstOrDefaultAsync(item => item.Id == id, ct);
+
+        if (product == null) return null;
+
+        await ValidateCategoryAsync(request.CategoryId, ct);
+
+        ApplyRequest(product, request);
+        product.UpdatedAtUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        await _db.Entry(product).Reference(item => item.Category).LoadAsync(ct);
+        _logger.LogInformation("Updated product {ProductId}", product.Id);
+        return MapToResponse(product);
+    }
+
+    private async Task ValidateCategoryAsync(Guid? categoryId, CancellationToken ct)
+    {
+        if (!categoryId.HasValue) return;
+
+        var categoryExists = await _db.Categories.AnyAsync(
+            category => category.Id == categoryId.Value && category.IsActive, ct);
+
+        if (!categoryExists)
+        {
+            throw new InvalidProductCategoryException("Category does not exist or is inactive.");
+        }
+    }
+
+    private static void ApplyRequest(Product product, ProductRequest request)
+    {
+        product.CategoryId = request.CategoryId;
+        product.Name = request.Name.Trim();
+        product.Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim();
+        product.Price = request.Price;
+        product.StockQuantity = request.StockQuantity;
+        product.Unit = request.Unit.Trim();
+        product.ImageUrl = string.IsNullOrWhiteSpace(request.ImageUrl) ? null : request.ImageUrl.Trim();
+        product.IsActive = request.IsActive;
+    }
+
+    private static ProductResponse MapToResponse(Product product) => new()
+    {
+        Id = product.Id,
+        CategoryId = product.CategoryId,
+        Name = product.Name,
+        Description = product.Description,
+        Price = product.Price,
+        Category = product.Category != null ? product.Category.Name : null,
+        StockQuantity = product.StockQuantity,
+        Unit = product.Unit,
+        ImageUrl = product.ImageUrl,
+        Available = product.StockQuantity > 0
+    };
+}
+
+public class InvalidProductCategoryException : Exception
+{
+    public InvalidProductCategoryException(string message) : base(message) { }
 }

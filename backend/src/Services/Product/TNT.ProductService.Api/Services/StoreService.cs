@@ -68,6 +68,11 @@ public class StoreService
 
     public async Task<StoreResponse> CreateStoreAsync(StoreRequest request, CancellationToken ct = default)
     {
+        if (await StoreCodeExistsAsync(request.StoreCode, excludeStoreId: null, ct))
+        {
+            throw new StoreConflictException("A store with this store code already exists.");
+        }
+
         var store = new Store
         {
             Id = Guid.NewGuid(),
@@ -86,6 +91,11 @@ public class StoreService
     {
         var store = await _db.Stores.FirstOrDefaultAsync(item => item.Id == id, ct);
         if (store == null) return null;
+
+        if (await StoreCodeExistsAsync(request.StoreCode, excludeStoreId: id, ct))
+        {
+            throw new StoreConflictException("A store with this store code already exists.");
+        }
 
         ApplyRequest(store, request);
         store.UpdatedAtUtc = DateTime.UtcNow;
@@ -116,6 +126,14 @@ public class StoreService
 
         _logger.LogInformation("{Action} store {StoreId}", isActive ? "Activated" : "Deactivated", store.Id);
         return MapToResponse(store);
+    }
+
+    private async Task<bool> StoreCodeExistsAsync(string storeCode, Guid? excludeStoreId, CancellationToken ct)
+    {
+        var normalizedCode = storeCode.Trim().ToLower();
+        return await _db.Stores.AnyAsync(store =>
+            store.StoreCode.ToLower() == normalizedCode &&
+            (!excludeStoreId.HasValue || store.Id != excludeStoreId.Value), ct);
     }
 
     private static void ApplyRequest(Store store, StoreRequest request)
@@ -151,4 +169,9 @@ public class StoreService
         CreatedAtUtc = store.CreatedAtUtc,
         UpdatedAtUtc = store.UpdatedAtUtc
     };
+}
+
+public class StoreConflictException : Exception
+{
+    public StoreConflictException(string message) : base(message) { }
 }

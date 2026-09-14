@@ -46,6 +46,7 @@ public class ProductDbContext : DbContext
             entity.Property(category => category.ImageUrl).HasMaxLength(500);
             entity.Property(category => category.IsActive).IsRequired().HasDefaultValue(true);
             entity.Property(category => category.CreatedAtUtc).IsRequired();
+            entity.Property(category => category.UpdatedAtUtc);
             entity.HasIndex(category => category.Name).IsUnique();
         });
 

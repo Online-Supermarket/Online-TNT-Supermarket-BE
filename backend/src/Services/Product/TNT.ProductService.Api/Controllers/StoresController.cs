@@ -49,23 +49,41 @@ public class StoresController : ControllerBase
     [HttpPost]
     [ProducesResponseType(typeof(StoreResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<StoreResponse>> CreateStore([FromBody] StoreRequest request, CancellationToken ct)
     {
-        var created = await _storeService.CreateStoreAsync(request, ct);
-        return CreatedAtAction(nameof(GetStore), new { id = created.Id }, created);
+        try
+        {
+            var created = await _storeService.CreateStoreAsync(request, ct);
+            return CreatedAtAction(nameof(GetStore), new { id = created.Id }, created);
+        }
+        catch (StoreConflictException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
     }
 
     [HttpPut("{id:guid}")]
     [ProducesResponseType(typeof(StoreResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<StoreResponse>> UpdateStore(Guid id, [FromBody] StoreRequest request, CancellationToken ct)
     {
-        var updated = await _storeService.UpdateStoreAsync(id, request, ct);
+        StoreResponse? updated;
+        try
+        {
+            updated = await _storeService.UpdateStoreAsync(id, request, ct);
+        }
+        catch (StoreConflictException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+
         if (updated == null) return NotFound(new { message = "Store not found." });
 
         return Ok(updated);

@@ -86,10 +86,49 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
         anonymousResponse.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
+    [Fact(DisplayName = "Product_CanBeAssociatedWithValidCategory")]
+    public async Task Product_CanBeAssociatedWithValidCategory()
+    {
+        var category = await SeedCategoryAsync();
+        var client = CreateClientForRole("Admin");
+
+        var response = await client.PostAsJsonAsync("/api/products", ValidProductRequest(category.Id));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        var body = await response.Content.ReadFromJsonAsync<ProductResponse>(JsonOptions);
+        body!.CategoryId.Should().Be(category.Id);
+        body.Category.Should().Be(category.Name);
+    }
+
+    [Fact(DisplayName = "Product_CannotUseInvalidCategory")]
+    public async Task Product_CannotUseInvalidCategory()
+    {
+        var client = CreateClientForRole("Admin");
+
+        var response = await client.PostAsJsonAsync("/api/products", ValidProductRequest(Guid.NewGuid()));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact(DisplayName = "Customer_CannotCreateProduct")]
+    public async Task Customer_CannotCreateProduct()
+    {
+        var client = CreateBuyerClient();
+
+        var response = await client.PostAsJsonAsync("/api/products", ValidProductRequest());
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
     private HttpClient CreateBuyerClient()
     {
+        return CreateClientForRole("Buyer");
+    }
+
+    private HttpClient CreateClientForRole(string role)
+    {
         var client = _factory.CreateClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateJwt("Buyer"));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", CreateJwt(role));
         return client;
     }
 
@@ -136,5 +175,32 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
         Category = category,
         CategoryId = category.Id,
         CreatedAtUtc = DateTime.UtcNow
+    };
+
+    private async Task<Category> SeedCategoryAsync(bool isActive = true)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
+        var category = new Category
+        {
+            Id = Guid.NewGuid(),
+            Name = $"Category-{Guid.NewGuid():N}",
+            IsActive = isActive,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        db.Categories.Add(category);
+        await db.SaveChangesAsync();
+        return category;
+    }
+
+    private static ProductRequest ValidProductRequest(Guid? categoryId = null) => new()
+    {
+        CategoryId = categoryId,
+        Name = $"Product-{Guid.NewGuid():N}",
+        Description = "Test product",
+        Price = 100,
+        StockQuantity = 10,
+        Unit = "item",
+        IsActive = true
     };
 }

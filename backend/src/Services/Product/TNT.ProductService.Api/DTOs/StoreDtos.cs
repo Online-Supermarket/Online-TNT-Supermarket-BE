@@ -5,6 +5,7 @@ namespace TNT.ProductService.Api.DTOs;
 public class StoreAddressDto
 {
     [Required]
+    [NotBlank]
     [MaxLength(250)]
     public string Line1 { get; set; } = string.Empty;
 
@@ -12,14 +13,17 @@ public class StoreAddressDto
     public string? Line2 { get; set; }
 
     [Required]
+    [NotBlank]
     [MaxLength(100)]
     public string City { get; set; } = string.Empty;
 
     [Required]
+    [NotBlank]
     [MaxLength(30)]
     public string PostalCode { get; set; } = string.Empty;
 
     [Required]
+    [NotBlank]
     [MaxLength(100)]
     public string Country { get; set; } = string.Empty;
 }
@@ -27,10 +31,12 @@ public class StoreAddressDto
 public class StoreRequest
 {
     [Required]
+    [NotBlank]
     [MaxLength(50)]
     public string StoreCode { get; set; } = string.Empty;
 
     [Required]
+    [NotBlank]
     [MaxLength(200)]
     public string StoreName { get; set; } = string.Empty;
 
@@ -38,10 +44,12 @@ public class StoreRequest
     public StoreAddressDto Address { get; set; } = new();
 
     [Required]
+    [NotBlank]
     [MaxLength(30)]
     public string ContactNumber { get; set; } = string.Empty;
 
     [Required]
+    [NotBlank]
     [EmailAddress]
     [MaxLength(254)]
     public string Email { get; set; } = string.Empty;

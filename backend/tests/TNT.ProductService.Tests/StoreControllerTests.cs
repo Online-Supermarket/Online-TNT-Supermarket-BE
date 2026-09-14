@@ -103,16 +103,31 @@ public class StoreControllerTests : IClassFixture<ProductWebApplicationFactory>
         activate.StatusCode.Should().Be(HttpStatusCode.OK);
         var activated = await activate.Content.ReadFromJsonAsync<StoreResponse>(JsonOptions);
         activated!.IsActive.Should().BeTrue();
+
+        var retrieved = await client.GetFromJsonAsync<StoreResponse>($"/api/stores/{created.Id}", JsonOptions);
+        retrieved!.IsActive.Should().BeTrue();
     }
 
-    [Fact(DisplayName = "Buyer_ReceivesForbidden_OnAdminStoreApis")]
-    public async Task Buyer_ReceivesForbidden_OnAdminStoreApis()
+    [Theory(DisplayName = "NonAdminRoles_ReceiveForbidden_OnStoreModificationApis")]
+    [InlineData("Buyer")]
+    [InlineData("Customer")]
+    [InlineData("Staff")]
+    [InlineData("Rider")]
+    [InlineData("Delivery")]
+    [InlineData("Manager")]
+    public async Task NonAdminRoles_ReceiveForbidden_OnStoreModificationApis(string role)
     {
-        var client = CreateClientForRole("Buyer");
+        var adminClient = CreateClientForRole("Admin");
+        var store = await CreateStoreAsync(adminClient);
+        var client = CreateClientForRole(role);
 
-        var response = await client.GetAsync("/api/stores");
+        var createResponse = await client.PostAsJsonAsync("/api/stores", ValidRequest());
+        var updateResponse = await client.PutAsJsonAsync($"/api/stores/{store.Id}", ValidRequest());
+        var deactivateResponse = await client.PatchAsync($"/api/stores/{store.Id}/deactivate", null);
 
-        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        createResponse.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        updateResponse.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        deactivateResponse.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     [Fact(DisplayName = "UnauthenticatedRequest_ReceivesUnauthorized")]
@@ -120,9 +135,11 @@ public class StoreControllerTests : IClassFixture<ProductWebApplicationFactory>
     {
         var client = _factory.CreateClient();
 
-        var response = await client.GetAsync("/api/stores");
+        var getResponse = await client.GetAsync("/api/stores");
+        var postResponse = await client.PostAsJsonAsync("/api/stores", ValidRequest());
 
-        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        getResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        postResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
     [Fact(DisplayName = "ValidationFailure_ReturnsBadRequest")]
@@ -137,12 +154,48 @@ public class StoreControllerTests : IClassFixture<ProductWebApplicationFactory>
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    [Fact(DisplayName = "WhitespaceRequiredFields_ReturnBadRequest")]
+    public async Task WhitespaceRequiredFields_ReturnBadRequest()
+    {
+        var client = CreateClientForRole("Admin");
+        var request = ValidRequest();
+        request.StoreName = "   ";
+
+        var response = await client.PostAsJsonAsync("/api/stores", request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact(DisplayName = "DuplicateStoreCode_ReturnsConflict")]
+    public async Task DuplicateStoreCode_ReturnsConflict()
+    {
+        var client = CreateClientForRole("Admin");
+        var request = ValidRequest();
+        await CreateStoreAsync(client, request);
+
+        var duplicate = ValidRequest(request.StoreCode);
+
+        var response = await client.PostAsJsonAsync("/api/stores", duplicate);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
     [Fact(DisplayName = "UnknownStoreId_ReturnsNotFound")]
     public async Task UnknownStoreId_ReturnsNotFound()
     {
         var client = CreateClientForRole("Admin");
 
         var response = await client.GetAsync($"/api/stores/{Guid.NewGuid()}");
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact(DisplayName = "UnknownStoreId_OnUpdate_ReturnsNotFound")]
+    public async Task UnknownStoreId_OnUpdate_ReturnsNotFound()
+    {
+        var client = CreateClientForRole("Admin");
+
+        var response = await client.PutAsJsonAsync($"/api/stores/{Guid.NewGuid()}", ValidRequest());
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
@@ -200,9 +253,9 @@ public class StoreControllerTests : IClassFixture<ProductWebApplicationFactory>
         return $"TNT-{suffix}";
     }
 
-    private static async Task<StoreResponse> CreateStoreAsync(HttpClient client)
+    private static async Task<StoreResponse> CreateStoreAsync(HttpClient client, StoreRequest? request = null)
     {
-        var response = await client.PostAsJsonAsync("/api/stores", ValidRequest());
+        var response = await client.PostAsJsonAsync("/api/stores", request ?? ValidRequest());
         response.StatusCode.Should().Be(HttpStatusCode.Created);
         return (await response.Content.ReadFromJsonAsync<StoreResponse>(JsonOptions))!;
     }
