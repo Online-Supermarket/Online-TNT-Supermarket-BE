@@ -8,6 +8,8 @@ public class ProductDbContext : DbContext
     public ProductDbContext(DbContextOptions<ProductDbContext> options) : base(options) { }
 
     public DbSet<Store> Stores => Set<Store>();
+    public DbSet<Category> Categories => Set<Category>();
+    public DbSet<Product> Products => Set<Product>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -33,6 +35,37 @@ public class ProductDbContext : DbContext
             entity.HasIndex(store => store.StoreCode)
                 .IsUnique()
                 .HasDatabaseName("IX_Stores_StoreCode");
+        });
+
+        modelBuilder.Entity<Category>(entity =>
+        {
+            entity.ToTable("Categories");
+            entity.HasKey(category => category.Id);
+            entity.Property(category => category.Name).IsRequired().HasMaxLength(100);
+            entity.Property(category => category.Description).HasColumnType("text");
+            entity.Property(category => category.ImageUrl).HasMaxLength(500);
+            entity.Property(category => category.IsActive).IsRequired().HasDefaultValue(true);
+            entity.Property(category => category.CreatedAtUtc).IsRequired();
+            entity.HasIndex(category => category.Name).IsUnique();
+        });
+
+        modelBuilder.Entity<Product>(entity =>
+        {
+            entity.ToTable("Products");
+            entity.HasKey(product => product.Id);
+            entity.Property(product => product.Name).IsRequired().HasMaxLength(200);
+            entity.Property(product => product.Description).HasColumnType("text");
+            entity.Property(product => product.Price).HasPrecision(10, 2);
+            entity.Property(product => product.StockQuantity).IsRequired().HasDefaultValue(0);
+            entity.Property(product => product.Unit).IsRequired().HasMaxLength(50).HasDefaultValue("item");
+            entity.Property(product => product.ImageUrl).HasMaxLength(500);
+            entity.Property(product => product.IsActive).IsRequired().HasDefaultValue(true);
+            entity.Property(product => product.CreatedAtUtc).IsRequired();
+            entity.HasIndex(product => product.CategoryId);
+            entity.HasOne(product => product.Category)
+                .WithMany(category => category.Products)
+                .HasForeignKey(product => product.CategoryId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

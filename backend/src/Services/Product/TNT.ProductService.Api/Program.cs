@@ -42,6 +42,7 @@ try
     builder.Services.AddAuthorization();
 
     builder.Services.AddScoped<StoreService>();
+    builder.Services.AddScoped<ProductService>();
 
     builder.Services.AddControllers();
     builder.Services.AddEndpointsApiExplorer();
