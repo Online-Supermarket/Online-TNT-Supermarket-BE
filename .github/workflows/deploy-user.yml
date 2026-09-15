@@ -9,11 +9,10 @@ on:
       - ".github/workflows/deploy-user.yml"
   workflow_dispatch:
     inputs:
-      force_deploy:
-        description: "Force deploy even without path changes"
+      image_tag_override:
+        description: "Optional: specific git SHA to deploy (leave blank for HEAD)"
         required: false
-        default: "false"
-        type: boolean
+        default: ""
 
 permissions:
   contents: read
