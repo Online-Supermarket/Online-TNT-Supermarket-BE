@@ -1,0 +1,15 @@
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS migrator
+WORKDIR /workspace/backend
+
+COPY backend/.config/ ./.config/
+COPY backend/TNT.Supermarket.sln ./
+COPY backend/src/ ./src/
+COPY backend/scripts/apply-migrations.sh ./scripts/apply-migrations.sh
+
+RUN dotnet tool restore \
+    && dotnet restore TNT.Supermarket.sln \
+    && dotnet build src/Services/Identity/TNT.IdentityService.Api/TNT.IdentityService.Api.csproj --no-restore --configuration Release \
+    && dotnet build src/Services/User/TNT.UserService.Api/TNT.UserService.Api.csproj --no-restore --configuration Release \
+    && dotnet build src/Services/Product/TNT.ProductService.Api/TNT.ProductService.Api.csproj --no-restore --configuration Release
+
+ENTRYPOINT ["./scripts/apply-migrations.sh"]

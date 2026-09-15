@@ -8,6 +8,35 @@ if (!connectionString) {
   throw new Error('SUPABASE_DATABASE_URL must be provided through the environment.');
 }
 
+// This legacy utility predates database-per-service ownership and deletes rows.
+// Keep two deliberate safeguards so it cannot be invoked by a normal setup or
+// deployment command, or pointed at a service/administrative database.
+const destructiveAcknowledgement = process.env.TNT_ALLOW_DESTRUCTIVE_LEGACY_SEED;
+const parsedConnection = new URL(connectionString);
+const databaseName = decodeURIComponent(parsedConnection.pathname.replace(/^\//, ''));
+const protectedDatabases = new Set([
+  'postgres',
+  'template0',
+  'template1',
+  'tnt_identity',
+  'tnt_user',
+  'tnt_product'
+]);
+
+if (destructiveAcknowledgement !== 'I_UNDERSTAND_THIS_DELETES_DATA') {
+  throw new Error(
+    'Legacy seed blocked. Set TNT_ALLOW_DESTRUCTIVE_LEGACY_SEED=' +
+    'I_UNDERSTAND_THIS_DELETES_DATA only for an isolated disposable database.'
+  );
+}
+
+if (protectedDatabases.has(databaseName) || !/(dev|test|sandbox)/i.test(databaseName)) {
+  throw new Error(
+    `Legacy seed blocked for database "${databaseName}". ` +
+    'The target name must contain dev, test, or sandbox and must not be a service database.'
+  );
+}
+
 function hashToken(rawToken) {
   return crypto.createHash('sha256').update(rawToken).digest('base64');
 }
@@ -20,10 +49,8 @@ async function run() {
   console.log('================================================================\n');
 
   const startTime = Date.now();
-  const client = new Client({
-    connectionString,
-    ssl: { rejectUnauthorized: false }
-  });
+  const client = new Client({ connectionString });
+  let transactionStarted = false;
 
   try {
     // ─── 1. CONNECT & PING ───────────────────────────────────────────────────
@@ -36,6 +63,9 @@ async function run() {
     console.log(`   - User: ${pingRes.rows[0].current_user}`);
     console.log(`   - Server Time: ${pingRes.rows[0].server_time}`);
     console.log(`   - Version: ${pingRes.rows[0].version.split('\n')[0]}\n`);
+
+    await client.query('BEGIN');
+    transactionStarted = true;
 
     // ─── 2. ENSURE SUPERMARKET DOMAIN SCHEMA ─────────────────────────────────
     console.log('[2/6] Ensuring Supermarket schema & tables exist...');
@@ -473,11 +503,16 @@ async function run() {
       console.log(` • ${p.Name.padEnd(34)} | Rs. ${p.Price.padEnd(8)} / ${p.Unit.padEnd(10)} | Stock: ${p.StockQuantity}`);
     }
     console.log('----------------------------------------------------------------');
+    await client.query('COMMIT');
+    transactionStarted = false;
     console.log('\n SUCCESS: Database connection, schema, seeding and tests finished successfully!');
 
   } catch (err) {
+    if (transactionStarted) {
+      await client.query('ROLLBACK');
+    }
     console.error(' ERROR during database operations:', err);
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     await client.end();
   }

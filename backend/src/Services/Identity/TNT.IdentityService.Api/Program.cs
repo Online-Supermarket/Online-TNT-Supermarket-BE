@@ -1,6 +1,7 @@
 using FluentValidation;
 using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -59,8 +60,21 @@ try
     // ──────────────────────────────────────────────────────────────────────────
     // Database — PostgreSQL via EF Core
     // ──────────────────────────────────────────────────────────────────────────
+    var identityConnectionString = builder.Configuration.GetConnectionString("IdentityDb");
+    if (string.IsNullOrWhiteSpace(identityConnectionString))
+    {
+        throw new InvalidOperationException("ConnectionStrings:IdentityDb is required.");
+    }
+
     builder.Services.AddDbContext<IdentityDbContext>(opts =>
-        opts.UseNpgsql(builder.Configuration.GetConnectionString("IdentityDb")));
+        opts.UseNpgsql(identityConnectionString, postgres =>
+        {
+            postgres.CommandTimeout(30);
+            postgres.EnableRetryOnFailure(
+                maxRetryCount: 3,
+                maxRetryDelay: TimeSpan.FromSeconds(5),
+                errorCodesToAdd: null);
+        }));
 
     // ──────────────────────────────────────────────────────────────────────────
     // JWT Authentication
@@ -171,7 +185,9 @@ try
     // Health checks
     // ──────────────────────────────────────────────────────────────────────────
     builder.Services.AddHealthChecks()
-        .AddDbContextCheck<IdentityDbContext>(name: "identity-db");
+        .AddDbContextCheck<IdentityDbContext>(
+            name: "identity-db",
+            tags: ["ready"]);
 
     // ──────────────────────────────────────────────────────────────────────────
     // CORS (allow frontend during local dev)
@@ -197,17 +213,6 @@ try
     // ──────────────────────────────────────────────────────────────────────────
     var app = builder.Build();
 
-    // Apply pending migrations on startup in Development (skipped when using InMemory in tests)
-    if (app.Environment.IsDevelopment())
-    {
-        using var scope = app.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<IdentityDbContext>();
-        if (db.Database.IsRelational())
-        {
-            db.Database.Migrate();
-        }
-    }
-
     // ──────────────────────────────────────────────────────────────────────────
     // Middleware pipeline
     // ──────────────────────────────────────────────────────────────────────────
@@ -227,7 +232,18 @@ try
 
     app.MapControllers();
 
-    app.MapHealthChecks("/health");
+    app.MapHealthChecks("/health/live", new HealthCheckOptions
+    {
+        Predicate = _ => false
+    });
+    app.MapHealthChecks("/health/ready", new HealthCheckOptions
+    {
+        Predicate = check => check.Tags.Contains("ready")
+    });
+    app.MapHealthChecks("/health", new HealthCheckOptions
+    {
+        Predicate = check => check.Tags.Contains("ready")
+    });
 
     app.Run();
 }

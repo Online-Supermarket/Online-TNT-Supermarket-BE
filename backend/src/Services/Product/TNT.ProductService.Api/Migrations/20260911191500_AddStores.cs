@@ -1,10 +1,14 @@
 using System;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using TNT.ProductService.Api.Data;
 
 #nullable disable
 
 namespace TNT.ProductService.Api.Migrations
 {
+    [DbContext(typeof(ProductDbContext))]
+    [Migration("20260911191500_AddStores")]
     public partial class AddStores : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
