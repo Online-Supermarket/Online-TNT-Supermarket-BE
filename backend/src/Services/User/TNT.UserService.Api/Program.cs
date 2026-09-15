@@ -1,6 +1,7 @@
 using FluentValidation;
 using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -25,11 +26,34 @@ try
            .WriteTo.Console());
 
     // Database
+    var userConnectionString = builder.Configuration.GetConnectionString("UserDb");
+    if (string.IsNullOrWhiteSpace(userConnectionString))
+    {
+        throw new InvalidOperationException("ConnectionStrings:UserDb is required.");
+    }
+
     builder.Services.AddDbContext<UserDbContext>(opts =>
-        opts.UseNpgsql(builder.Configuration.GetConnectionString("UserDb")));
+        opts.UseNpgsql(userConnectionString, postgres =>
+        {
+            postgres.CommandTimeout(30);
+            postgres.EnableRetryOnFailure(
+                maxRetryCount: 3,
+                maxRetryDelay: TimeSpan.FromSeconds(5),
+                errorCodesToAdd: null);
+        }));
 
     // JWT — User Service validates the token independently, does not call Identity Service
     var jwtSection = builder.Configuration.GetSection("Jwt");
+    var jwtIssuer = jwtSection["Issuer"];
+    var jwtAudience = jwtSection["Audience"];
+    var jwtSecretKey = jwtSection["SecretKey"];
+    if (string.IsNullOrWhiteSpace(jwtIssuer))
+        throw new InvalidOperationException("Jwt:Issuer is required.");
+    if (string.IsNullOrWhiteSpace(jwtAudience))
+        throw new InvalidOperationException("Jwt:Audience is required.");
+    if (string.IsNullOrWhiteSpace(jwtSecretKey) || jwtSecretKey.Length < 32)
+        throw new InvalidOperationException("Jwt:SecretKey must be at least 32 characters long.");
+
     builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         .AddJwtBearer(opts =>
         {
@@ -39,10 +63,10 @@ try
                 ValidateAudience = true,
                 ValidateLifetime = true,
                 ValidateIssuerSigningKey = true,
-                ValidIssuer = jwtSection["Issuer"],
-                ValidAudience = jwtSection["Audience"],
+                ValidIssuer = jwtIssuer,
+                ValidAudience = jwtAudience,
                 IssuerSigningKey = new SymmetricSecurityKey(
-                    Encoding.UTF8.GetBytes(jwtSection["SecretKey"]!)),
+                    Encoding.UTF8.GetBytes(jwtSecretKey)),
                 NameClaimType = ClaimTypes.NameIdentifier,
                 RoleClaimType = ClaimTypes.Role,
                 ClockSkew = TimeSpan.Zero
@@ -89,7 +113,9 @@ try
     });
 
     builder.Services.AddHealthChecks()
-        .AddDbContextCheck<UserDbContext>(name: "user-db");
+        .AddDbContextCheck<UserDbContext>(
+            name: "user-db",
+            tags: ["ready"]);
 
     builder.Services.AddCors(opts =>
     {
@@ -109,13 +135,6 @@ try
 
     var app = builder.Build();
 
-    if (app.Environment.IsDevelopment())
-    {
-        using var scope = app.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<UserDbContext>();
-        db.Database.Migrate();
-    }
-
     app.UseSwagger();
     app.UseSwaggerUI(c =>
     {
@@ -129,7 +148,18 @@ try
     app.UseAuthorization();
 
     app.MapControllers();
-    app.MapHealthChecks("/health");
+    app.MapHealthChecks("/health/live", new HealthCheckOptions
+    {
+        Predicate = _ => false
+    });
+    app.MapHealthChecks("/health/ready", new HealthCheckOptions
+    {
+        Predicate = check => check.Tags.Contains("ready")
+    });
+    app.MapHealthChecks("/health", new HealthCheckOptions
+    {
+        Predicate = check => check.Tags.Contains("ready")
+    });
 
     app.Run();
 }

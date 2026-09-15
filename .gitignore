@@ -1,6 +1,7 @@
 bin/
 obj/
 TestResults/
+backend/artifacts/
 *.user
 *.suo
 .vs/

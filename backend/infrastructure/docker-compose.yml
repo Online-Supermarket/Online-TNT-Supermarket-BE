@@ -8,7 +8,7 @@
 #   Logs:        docker compose -f infrastructure/docker-compose.yml logs -f <service-name>
 #
 # Port Map:
-#   5000  → API Gateway
+#   5150  → API Gateway (default)
 #   5001  → Identity Service
 #   5002  → User Service
 #   5003  → Product Service
@@ -228,6 +228,31 @@ services:
       retries: 5
       start_period: 30s
 
+  # Explicit one-shot schema deployment. API containers never migrate schemas.
+  database-migrations:
+    build:
+      context: ../..
+      dockerfile: backend/infrastructure/Dockerfiles/Dockerfile.Migrations
+    restart: "no"
+    environment:
+      DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE: "false"
+      Jwt__SecretKey: local-design-time-key-never-use-in-production
+      ConnectionStrings__IdentityDb: "Host=postgres-identity;Port=5432;Database=IdentityDb;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__UserDb: "Host=postgres-user;Port=5432;Database=UserDb;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__ProductDb: "Host=postgres-product;Port=5432;Database=ProductDb;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__IdentityDbMigrator: "Host=postgres-identity;Port=5432;Database=IdentityDb;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__UserDbMigrator: "Host=postgres-user;Port=5432;Database=UserDb;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__ProductDbMigrator: "Host=postgres-product;Port=5432;Database=ProductDb;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+    depends_on:
+      postgres-identity:
+        condition: service_healthy
+      postgres-user:
+        condition: service_healthy
+      postgres-product:
+        condition: service_healthy
+    networks:
+      - tnt-network
+
   # ─── Identity Service — Port 5001 ────────────────────────────────────────────
   identity-service:
     build:
@@ -251,8 +276,8 @@ services:
       Kafka__ClientId: identity-service
       Cors__AllowedOrigin: ${CORS_ALLOWED_ORIGIN:-http://localhost:5173}
     depends_on:
-      postgres-identity:
-        condition: service_healthy
+      database-migrations:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
     networks:
@@ -275,8 +300,8 @@ services:
       Jwt__SecretKey: ${JWT_SECRET_KEY}
       Cors__AllowedOrigin: ${CORS_ALLOWED_ORIGIN:-http://localhost:5173}
     depends_on:
-      postgres-user:
-        condition: service_healthy
+      database-migrations:
+        condition: service_completed_successfully
     networks:
       - tnt-network
 
@@ -300,8 +325,8 @@ services:
       Kafka__BootstrapServers: kafka:9092
       Kafka__ClientId: product-service
     depends_on:
-      postgres-product:
-        condition: service_healthy
+      database-migrations:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
     networks:
@@ -434,7 +459,7 @@ services:
     networks:
       - tnt-network
 
-  # ─── API Gateway — Port 5000 ──────────────────────────────────────────────────
+  # ─── API Gateway — Port 5150 ─────────────────────────────────────────────────
   api-gateway:
     build:
       context: ../..
@@ -442,9 +467,10 @@ services:
     container_name: tnt-api-gateway
     restart: unless-stopped
     ports:
-      - "${API_GATEWAY_PORT:-5000}:8080"
+      - "${API_GATEWAY_PORT:-5150}:8080"
     environment:
       ASPNETCORE_ENVIRONMENT: Development
+      Cors__AllowedOrigin: ${CORS_ALLOWED_ORIGIN:-http://localhost:5173}
       ReverseProxy__Clusters__identity-cluster__Destinations__identity-destination__Address: http://identity-service:8080
       ReverseProxy__Clusters__user-cluster__Destinations__user-destination__Address: http://user-service:8080
       ReverseProxy__Clusters__product-cluster__Destinations__product-destination__Address: http://product-service:8080

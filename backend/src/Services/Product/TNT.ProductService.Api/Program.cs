@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi.Models;
 using Microsoft.IdentityModel.Tokens;
@@ -19,10 +20,33 @@ try
            .Enrich.FromLogContext()
            .WriteTo.Console());
 
+    var productConnectionString = builder.Configuration.GetConnectionString("ProductDb");
+    if (string.IsNullOrWhiteSpace(productConnectionString))
+    {
+        throw new InvalidOperationException("ConnectionStrings:ProductDb is required.");
+    }
+
     builder.Services.AddDbContext<ProductDbContext>(options =>
-        options.UseNpgsql(builder.Configuration.GetConnectionString("ProductDb")));
+        options.UseNpgsql(productConnectionString, postgres =>
+        {
+            postgres.CommandTimeout(30);
+            postgres.EnableRetryOnFailure(
+                maxRetryCount: 3,
+                maxRetryDelay: TimeSpan.FromSeconds(5),
+                errorCodesToAdd: null);
+        }));
 
     var jwtSection = builder.Configuration.GetRequiredSection("Jwt");
+    var jwtIssuer = jwtSection["Issuer"];
+    var jwtAudience = jwtSection["Audience"];
+    var jwtSecretKey = jwtSection["SecretKey"];
+    if (string.IsNullOrWhiteSpace(jwtIssuer))
+        throw new InvalidOperationException("Jwt:Issuer is required.");
+    if (string.IsNullOrWhiteSpace(jwtAudience))
+        throw new InvalidOperationException("Jwt:Audience is required.");
+    if (string.IsNullOrWhiteSpace(jwtSecretKey) || jwtSecretKey.Length < 32)
+        throw new InvalidOperationException("Jwt:SecretKey must be at least 32 characters long.");
+
     builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         .AddJwtBearer(options => options.TokenValidationParameters = new TokenValidationParameters
         {
@@ -30,11 +54,10 @@ try
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
-            ValidIssuer = jwtSection["Issuer"],
-            ValidAudience = jwtSection["Audience"],
+            ValidIssuer = jwtIssuer,
+            ValidAudience = jwtAudience,
             IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(jwtSection["SecretKey"]
-                    ?? throw new InvalidOperationException("Jwt:SecretKey is required."))),
+                Encoding.UTF8.GetBytes(jwtSecretKey)),
             NameClaimType = ClaimTypes.NameIdentifier,
             RoleClaimType = ClaimTypes.Role,
             ClockSkew = TimeSpan.Zero
@@ -76,7 +99,9 @@ try
         });
     });
     builder.Services.AddHealthChecks()
-        .AddDbContextCheck<ProductDbContext>(name: "product-db");
+        .AddDbContextCheck<ProductDbContext>(
+            name: "product-db",
+            tags: ["ready"]);
 
     builder.Services.AddCors(options =>
     {
@@ -96,13 +121,6 @@ try
 
     var app = builder.Build();
 
-    if (app.Environment.IsDevelopment())
-    {
-        using var scope = app.Services.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
-        db.Database.Migrate();
-    }
-
     app.UseSwagger();
     app.UseSwaggerUI();
     app.UseSerilogRequestLogging();
@@ -110,11 +128,22 @@ try
     app.UseAuthentication();
     app.UseAuthorization();
     app.MapControllers();
-    app.MapHealthChecks("/health");
+    app.MapHealthChecks("/health/live", new HealthCheckOptions
+    {
+        Predicate = _ => false
+    });
+    app.MapHealthChecks("/health/ready", new HealthCheckOptions
+    {
+        Predicate = check => check.Tags.Contains("ready")
+    });
+    app.MapHealthChecks("/health", new HealthCheckOptions
+    {
+        Predicate = check => check.Tags.Contains("ready")
+    });
 
     app.Run();
 }
-catch (Exception ex)
+catch (Exception ex) when (ex is not HostAbortedException)
 {
     Log.Fatal(ex, "TNT.ProductService.Api failed to start");
     throw;

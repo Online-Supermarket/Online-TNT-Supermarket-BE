@@ -1,0 +1,135 @@
+name: Deploy — API Gateway
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/src/Gateway/**"
+      - "backend/infrastructure/Dockerfiles/Dockerfile.Gateway"
+      - ".github/workflows/deploy-gateway.yml"
+  workflow_dispatch:
+    inputs:
+      image_tag_override:
+        description: "Optional: specific git SHA to deploy (leave blank for HEAD)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write   # Required for OIDC federated identity to Azure
+
+concurrency:
+  group: deploy-gateway
+  cancel-in-progress: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Required GitHub repository secrets:
+#   AZURE_CLIENT_ID            – App registration client ID (OIDC federated cred)
+#   AZURE_TENANT_ID            – Azure tenant ID
+#   AZURE_SUBSCRIPTION_ID      – Target subscription ID
+#   AZURE_RESOURCE_GROUP       – Resource group name
+#   AZURE_CONTAINER_APP_GATEWAY – Container App name for api-gateway
+#   ACR_LOGIN_SERVER           – Azure Container Registry login server
+#
+# Note: The Gateway has no database and no migration step.
+# ─────────────────────────────────────────────────────────────────────────────
+
+jobs:
+  # ─── Step 1: Build & push Docker image ─────────────────────────────────────
+  build:
+    name: Build & Push Gateway Image
+    runs-on: ubuntu-latest
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=${{ secrets.ACR_LOGIN_SERVER }}/tnt-api-gateway:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name ${{ secrets.ACR_LOGIN_SERVER }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./backend/infrastructure/Dockerfiles/Dockerfile.Gateway
+          push: true
+          tags: ${{ steps.meta.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─── Step 2: Deploy updated image to Azure Container Apps ──────────────────
+  # Gateway has no database — no migration step needed.
+  deploy:
+    name: Deploy Gateway to Azure Container Apps
+    runs-on: ubuntu-latest
+    needs: [build]
+    environment: production
+
+    steps:
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Update Container App image
+        run: |
+          az containerapp update \
+            --name ${{ secrets.AZURE_CONTAINER_APP_GATEWAY }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --image ${{ needs.build.outputs.image_tag }}
+
+      - name: Wait for deployment to stabilise
+        run: sleep 30
+
+      - name: Health check — Gateway liveness via public FQDN
+        run: |
+          FQDN=$(az containerapp show \
+            --name ${{ secrets.AZURE_CONTAINER_APP_GATEWAY }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv)
+
+          for attempt in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$FQDN/health/live")
+            if [ "$STATUS" = "200" ]; then
+              echo "Gateway liveness check passed (attempt $attempt)"
+              exit 0
+            fi
+            echo "Gateway liveness returned $STATUS — waiting 15 s (attempt $attempt/5)"
+            sleep 15
+          done
+          echo "Gateway liveness check failed after 5 attempts" >&2
+          exit 1
+
+      - name: Smoke test — auth route is reachable through Gateway
+        run: |
+          FQDN=$(az containerapp show \
+            --name ${{ secrets.AZURE_CONTAINER_APP_GATEWAY }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv)
+
+          # Expect 405 (no GET on /api/auth/login) or 400/401 — any non-502/503/504
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$FQDN/api/auth/login")
+          if [[ "$STATUS" = "502" || "$STATUS" = "503" || "$STATUS" = "504" ]]; then
+            echo "Gateway cannot reach identity-service (returned $STATUS)" >&2
+            exit 1
+          fi
+          echo "Gateway route smoke test passed (status $STATUS)"

@@ -1,0 +1,196 @@
+name: Deploy — User Service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/src/Services/User/**"
+      - "backend/infrastructure/Dockerfiles/Dockerfile.User"
+      - ".github/workflows/deploy-user.yml"
+  workflow_dispatch:
+    inputs:
+      image_tag_override:
+        description: "Optional: specific git SHA to deploy (leave blank for HEAD)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write   # Required for OIDC federated identity to Azure
+
+concurrency:
+  group: deploy-user
+  cancel-in-progress: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Required GitHub repository secrets:
+#   AZURE_CLIENT_ID        – App registration client ID (OIDC federated cred)
+#   AZURE_TENANT_ID        – Azure tenant ID
+#   AZURE_SUBSCRIPTION_ID  – Target subscription ID
+#   AZURE_RESOURCE_GROUP   – Resource group name
+#   AZURE_CONTAINER_APP_USER – Container App name for user-service
+#   AZURE_KEY_VAULT_NAME   – Key Vault name holding migrator connection string
+#   ACR_LOGIN_SERVER       – Azure Container Registry login server
+# ─────────────────────────────────────────────────────────────────────────────
+
+jobs:
+  # ─── Step 1: Build & push Docker image ─────────────────────────────────────
+  build:
+    name: Build & Push User Image
+    runs-on: ubuntu-latest
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=${{ secrets.ACR_LOGIN_SERVER }}/tnt-user-service:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name ${{ secrets.ACR_LOGIN_SERVER }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push User image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./backend/infrastructure/Dockerfiles/Dockerfile.User
+          push: true
+          tags: ${{ steps.meta.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─── Step 2: Apply migrations (schema-owner credential, serialized) ─────────
+  migrate:
+    name: Apply User Migrations
+    runs-on: ubuntu-latest
+    needs: [build]
+    environment: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Fetch migrator connection string from Key Vault
+        id: kv
+        run: |
+          secret=$(az keyvault secret show \
+            --vault-name ${{ secrets.AZURE_KEY_VAULT_NAME }} \
+            --name user-db-migrator-connection-string \
+            --query value -o tsv)
+          echo "::add-mask::$secret"
+          echo "conn=$secret" >> "$GITHUB_OUTPUT"
+
+      - name: Restore EF tool
+        working-directory: backend
+        run: dotnet tool restore
+
+      - name: Restore project
+        working-directory: backend
+        run: dotnet restore src/Services/User/TNT.UserService.Api/TNT.UserService.Api.csproj
+
+      - name: Build User project
+        working-directory: backend
+        run: >
+          dotnet build
+          src/Services/User/TNT.UserService.Api/TNT.UserService.Api.csproj
+          --no-restore --configuration Release
+
+      - name: Apply User migrations
+        working-directory: backend
+        env:
+          ConnectionStrings__UserDbMigrator: ${{ steps.kv.outputs.conn }}
+          Jwt__SecretKey: design-time-only-key-not-for-runtime-at-least-32chars
+          ConnectionStrings__UserDb: ${{ steps.kv.outputs.conn }}
+        run: >
+          dotnet tool run dotnet-ef database update
+          --no-build
+          --configuration Release
+          --project src/Services/User/TNT.UserService.Api/TNT.UserService.Api.csproj
+
+  # ─── Step 3: Deploy updated image to Azure Container Apps ──────────────────
+  deploy:
+    name: Deploy User to Azure Container Apps
+    runs-on: ubuntu-latest
+    needs: [migrate]
+
+    steps:
+      - name: Log in to Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Update Container App image
+        run: |
+          az containerapp update \
+            --name ${{ secrets.AZURE_CONTAINER_APP_USER }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --image ${{ needs.build.outputs.image_tag }}
+
+      - name: Wait for deployment to stabilise
+        run: sleep 30
+
+      - name: Health check — liveness
+        run: |
+          FQDN=$(az containerapp show \
+            --name ${{ secrets.AZURE_CONTAINER_APP_USER }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv)
+
+          for attempt in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$FQDN/health/live")
+            if [ "$STATUS" = "200" ]; then
+              echo "Liveness check passed (attempt $attempt)"
+              exit 0
+            fi
+            echo "Liveness returned $STATUS — waiting 15 s (attempt $attempt/5)"
+            sleep 15
+          done
+          echo "Liveness check failed after 5 attempts" >&2
+          exit 1
+
+      - name: Health check — readiness (DB connectivity)
+        run: |
+          FQDN=$(az containerapp show \
+            --name ${{ secrets.AZURE_CONTAINER_APP_USER }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv)
+
+          for attempt in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$FQDN/health/ready")
+            if [ "$STATUS" = "200" ]; then
+              echo "Readiness check passed (attempt $attempt)"
+              exit 0
+            fi
+            echo "Readiness returned $STATUS — waiting 15 s (attempt $attempt/5)"
+            sleep 15
+          done
+          echo "Readiness check failed after 5 attempts" >&2
+          exit 1

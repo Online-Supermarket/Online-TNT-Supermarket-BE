@@ -1,0 +1,76 @@
+name: tnt-supermarket-azure-db
+
+services:
+  identity-service:
+    build:
+      context: ../..
+      dockerfile: backend/infrastructure/Dockerfiles/Dockerfile.Identity
+    restart: unless-stopped
+    ports:
+      - "5001:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__IdentityDb: "${TNT_IDENTITY_CONNECTION_STRING:?Set TNT_IDENTITY_CONNECTION_STRING}"
+      Jwt__Issuer: TNT.IdentityService
+      Jwt__Audience: TNT.Supermarket
+      Jwt__SecretKey: "${JWT_SECRET_KEY:?Set JWT_SECRET_KEY}"
+      Jwt__AccessTokenMinutes: "15"
+      Jwt__RefreshTokenDays: "7"
+      Kafka__Enabled: "false"
+      Cors__AllowedOrigin: "${CORS_ALLOWED_ORIGIN:-http://localhost:5173}"
+    networks: [tnt-network]
+
+  user-service:
+    build:
+      context: ../..
+      dockerfile: backend/infrastructure/Dockerfiles/Dockerfile.User
+    restart: unless-stopped
+    ports:
+      - "5002:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__UserDb: "${TNT_USER_CONNECTION_STRING:?Set TNT_USER_CONNECTION_STRING}"
+      Jwt__Issuer: TNT.IdentityService
+      Jwt__Audience: TNT.Supermarket
+      Jwt__SecretKey: "${JWT_SECRET_KEY:?Set JWT_SECRET_KEY}"
+      Cors__AllowedOrigin: "${CORS_ALLOWED_ORIGIN:-http://localhost:5173}"
+    networks: [tnt-network]
+
+  product-service:
+    build:
+      context: ../..
+      dockerfile: backend/infrastructure/Dockerfiles/Dockerfile.Product
+    restart: unless-stopped
+    ports:
+      - "5003:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__ProductDb: "${TNT_PRODUCT_CONNECTION_STRING:?Set TNT_PRODUCT_CONNECTION_STRING}"
+      Jwt__Issuer: TNT.IdentityService
+      Jwt__Audience: TNT.Supermarket
+      Jwt__SecretKey: "${JWT_SECRET_KEY:?Set JWT_SECRET_KEY}"
+      Cors__AllowedOrigin: "${CORS_ALLOWED_ORIGIN:-http://localhost:5173}"
+    networks: [tnt-network]
+
+  api-gateway:
+    build:
+      context: ../..
+      dockerfile: backend/infrastructure/Dockerfiles/Dockerfile.Gateway
+    restart: unless-stopped
+    ports:
+      - "${API_GATEWAY_PORT:-5150}:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      Cors__AllowedOrigin: "${CORS_ALLOWED_ORIGIN:-http://localhost:5173}"
+      ReverseProxy__Clusters__identity-cluster__Destinations__identity-destination__Address: http://identity-service:8080/
+      ReverseProxy__Clusters__user-cluster__Destinations__user-destination__Address: http://user-service:8080/
+      ReverseProxy__Clusters__product-cluster__Destinations__product-destination__Address: http://product-service:8080/
+    depends_on:
+      - identity-service
+      - user-service
+      - product-service
+    networks: [tnt-network]
+
+networks:
+  tnt-network:
+    driver: bridge
