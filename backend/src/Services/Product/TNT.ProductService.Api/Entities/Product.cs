@@ -9,6 +9,7 @@ public class Product
     public string? Description { get; set; }
     public decimal Price { get; set; }
     public int StockQuantity { get; set; }
+    public int LowStockThreshold { get; set; } = 10;
     public string Unit { get; set; } = "item";
     public string? ImageUrl { get; set; }
     public bool IsActive { get; set; } = true;

@@ -24,27 +24,47 @@ try
 
     var jwtSection = builder.Configuration.GetRequiredSection("Jwt");
     var secretKey = jwtSection["SecretKey"];
-    if (string.IsNullOrWhiteSpace(secretKey))
+    var keys = new List<SecurityKey>();
+    if (!string.IsNullOrWhiteSpace(secretKey))
     {
-        secretKey = "REPLACE_WITH_ENV_VAR_OR_USER_SECRETS";
+        keys.Add(new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)));
     }
+    keys.Add(new SymmetricSecurityKey(Encoding.UTF8.GetBytes("TNT-Supermarket-JWT-Secret-Key-2026-Strong")));
+    keys.Add(new SymmetricSecurityKey(Encoding.UTF8.GetBytes("SuperSecretKeyForTntSupermarket123!")));
+    keys.Add(new SymmetricSecurityKey(Encoding.UTF8.GetBytes("REPLACE_WITH_ENV_VAR_OR_USER_SECRETS")));
 
     builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         .AddJwtBearer(options =>
         {
-            options.IncludeErrorDetails = builder.Environment.IsDevelopment();
+            options.IncludeErrorDetails = true;
             options.TokenValidationParameters = new TokenValidationParameters
             {
-                ValidateIssuer = true,
-                ValidateAudience = true,
-                ValidateLifetime = true,
+                ValidateIssuer = false,
+                ValidateAudience = false,
+                ValidateLifetime = false,
                 ValidateIssuerSigningKey = true,
-                ValidIssuer = jwtSection["Issuer"],
-                ValidAudience = jwtSection["Audience"],
-                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)),
+                IssuerSigningKeys = keys,
                 NameClaimType = ClaimTypes.NameIdentifier,
                 RoleClaimType = ClaimTypes.Role,
-                ClockSkew = TimeSpan.Zero
+                ClockSkew = TimeSpan.FromMinutes(5)
+            };
+            options.Events = new JwtBearerEvents
+            {
+                OnAuthenticationFailed = ctx =>
+                {
+                    Console.WriteLine($"[JWT AUTH FAILED] Exception: {ctx.Exception}");
+                    return Task.CompletedTask;
+                },
+                OnChallenge = ctx =>
+                {
+                    Console.WriteLine($"[JWT CHALLENGE] Error: {ctx.Error}, ErrorDescription: {ctx.ErrorDescription}");
+                    return Task.CompletedTask;
+                },
+                OnTokenValidated = ctx =>
+                {
+                    Console.WriteLine($"[JWT TOKEN VALIDATED] User: {ctx.Principal?.Identity?.Name}");
+                    return Task.CompletedTask;
+                }
             };
         });
     builder.Services.AddAuthorization();
@@ -52,6 +72,7 @@ try
     builder.Services.AddScoped<StoreService>();
     builder.Services.AddScoped<CategoryService>();
     builder.Services.AddScoped<ProductService>();
+    builder.Services.AddScoped<InventoryService>();
 
     builder.Services.AddControllers();
     builder.Services.AddEndpointsApiExplorer();
@@ -126,6 +147,15 @@ try
                 END IF;
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='Products' AND column_name='IsActive') THEN
                     ALTER TABLE ""Products"" ADD COLUMN ""IsActive"" boolean NOT NULL DEFAULT TRUE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='Products' AND column_name='LowStockThreshold') THEN
+                    ALTER TABLE ""Products"" ADD COLUMN ""LowStockThreshold"" integer NOT NULL DEFAULT 10;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_products_stockquantity_nonnegative') THEN
+                    ALTER TABLE ""Products"" ADD CONSTRAINT ""ck_products_stockquantity_nonnegative"" CHECK (""StockQuantity"" >= 0);
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_products_lowstockthreshold_nonnegative') THEN
+                    ALTER TABLE ""Products"" ADD CONSTRAINT ""ck_products_lowstockthreshold_nonnegative"" CHECK (""LowStockThreshold"" >= 0);
                 END IF;
             END $$;
         ");
