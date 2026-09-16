@@ -71,7 +71,7 @@ public class ProductsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
-    public async Task<ActionResult<ProductResponse>> CreateProduct([FromBody] ProductRequest request, CancellationToken ct)
+    public async Task<ActionResult<ProductResponse>> CreateProduct([FromForm] ProductRequest request, CancellationToken ct)
     {
         try
         {
@@ -79,6 +79,10 @@ public class ProductsController : ControllerBase
             return CreatedAtAction(nameof(GetProduct), new { id = created.Id }, created);
         }
         catch (InvalidProductCategoryException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (InvalidProductImageException ex)
         {
             return BadRequest(new { message = ex.Message });
         }
@@ -91,7 +95,7 @@ public class ProductsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<ProductResponse>> UpdateProduct(Guid id, [FromBody] ProductRequest request, CancellationToken ct)
+    public async Task<ActionResult<ProductResponse>> UpdateProduct(Guid id, [FromForm] ProductRequest request, CancellationToken ct)
     {
         ProductResponse? updated;
         try
@@ -99,6 +103,10 @@ public class ProductsController : ControllerBase
             updated = await _productService.UpdateProductAsync(id, request, ct);
         }
         catch (InvalidProductCategoryException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+        catch (InvalidProductImageException ex)
         {
             return BadRequest(new { message = ex.Message });
         }

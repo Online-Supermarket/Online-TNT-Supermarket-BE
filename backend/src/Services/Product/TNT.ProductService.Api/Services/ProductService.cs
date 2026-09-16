@@ -116,6 +116,8 @@ public class ProductService
         };
 
         ApplyRequest(product, request);
+        await HandleImageUploadAsync(product, request, ct);
+
         _db.Products.Add(product);
         await _db.SaveChangesAsync(ct);
 
@@ -135,6 +137,8 @@ public class ProductService
         await ValidateCategoryAsync(request.CategoryId, ct);
 
         ApplyRequest(product, request);
+        await HandleImageUploadAsync(product, request, ct);
+        
         product.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
 
@@ -169,6 +173,41 @@ public class ProductService
         }
     }
 
+    private async Task HandleImageUploadAsync(Product product, ProductRequest request, CancellationToken ct)
+    {
+        if (request.Image == null || request.Image.Length == 0) return;
+
+        var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".gif", ".webp" };
+        var extension = Path.GetExtension(request.Image.FileName).ToLowerInvariant();
+
+        if (!allowedExtensions.Contains(extension))
+        {
+            throw new InvalidProductImageException("Invalid file type. Only JPG, PNG, GIF, and WEBP are allowed.");
+        }
+
+        if (request.Image.Length > 5 * 1024 * 1024)
+        {
+            throw new InvalidProductImageException("File size exceeds the 5MB limit.");
+        }
+
+        var fileName = $"{Guid.NewGuid()}{extension}";
+        var folderPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "images");
+
+        if (!Directory.Exists(folderPath))
+        {
+            Directory.CreateDirectory(folderPath);
+        }
+
+        var filePath = Path.Combine(folderPath, fileName);
+
+        using (var stream = new FileStream(filePath, FileMode.Create))
+        {
+            await request.Image.CopyToAsync(stream, ct);
+        }
+
+        product.ImageUrl = $"/images/{fileName}";
+    }
+
     private static void ApplyRequest(Product product, ProductRequest request)
     {
         product.CategoryId = request.CategoryId;
@@ -177,7 +216,18 @@ public class ProductService
         product.Price = request.Price;
         product.StockQuantity = request.StockQuantity;
         product.Unit = string.IsNullOrWhiteSpace(request.Unit) ? "item" : request.Unit.Trim();
-        product.ImageUrl = string.IsNullOrWhiteSpace(request.ImageUrl) ? null : request.ImageUrl.Trim();
+        
+        // Only overwrite image URL if it was explicitly cleared (in real scenarios we might have a specific flag for this)
+        // If an image is being uploaded, HandleImageUploadAsync will overwrite it anyway.
+        if (request.ImageUrl != null)
+        {
+            product.ImageUrl = string.IsNullOrWhiteSpace(request.ImageUrl) ? null : request.ImageUrl.Trim();
+        }
+        else if (request.ImageUrl == "")
+        {
+            product.ImageUrl = null;
+        }
+
         product.IsActive = request.IsActive;
     }
 
@@ -199,4 +249,9 @@ public class ProductService
 public class InvalidProductCategoryException : Exception
 {
     public InvalidProductCategoryException(string message) : base(message) { }
+}
+
+public class InvalidProductImageException : Exception
+{
+    public InvalidProductImageException(string message) : base(message) { }
 }

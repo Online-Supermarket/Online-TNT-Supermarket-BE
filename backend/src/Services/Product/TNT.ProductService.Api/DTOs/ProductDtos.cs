@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http;
 using System.ComponentModel.DataAnnotations;
 
 namespace TNT.ProductService.Api.DTOs;
@@ -26,6 +27,8 @@ public class ProductRequest
 
     [MaxLength(500)]
     public string? ImageUrl { get; set; }
+
+    public IFormFile? Image { get; set; }
 
     public bool IsActive { get; set; } = true;
 }
