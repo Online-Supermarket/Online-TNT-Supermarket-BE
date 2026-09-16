@@ -43,10 +43,9 @@ public class ProductDbContext : DbContext
             entity.HasKey(category => category.Id);
             entity.Property(category => category.Name).IsRequired().HasMaxLength(100);
             entity.Property(category => category.Description).HasColumnType("text");
-            entity.Property(category => category.ImageUrl).HasMaxLength(500);
             entity.Property(category => category.IsActive).IsRequired().HasDefaultValue(true);
-            entity.Property(category => category.CreatedAtUtc).IsRequired();
-            entity.Property(category => category.UpdatedAtUtc);
+            entity.Property(category => category.CreatedAt).IsRequired();
+            entity.Property(category => category.UpdatedAt);
             entity.HasIndex(category => category.Name).IsUnique();
         });
 
@@ -64,7 +63,7 @@ public class ProductDbContext : DbContext
             entity.Property(product => product.CreatedAtUtc).IsRequired();
             entity.HasIndex(product => product.CategoryId);
             entity.HasOne(product => product.Category)
-                .WithMany(category => category.Products)
+                .WithMany()
                 .HasForeignKey(product => product.CategoryId)
                 .OnDelete(DeleteBehavior.Cascade);
         });

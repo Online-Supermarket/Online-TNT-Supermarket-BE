@@ -22,7 +22,7 @@ public class ProductService
             .Include(item => item.Category)
             .FirstOrDefaultAsync(item => item.Id == id, ct);
 
-        return product == null ? null : MapToResponse(product);
+        return product == null || !product.IsActive ? null : MapToResponse(product);
     }
 
     public async Task<ProductListResponse> GetProductsAsync(
@@ -128,7 +128,7 @@ public class ProductService
     {
         var product = await _db.Products
             .Include(item => item.Category)
-            .FirstOrDefaultAsync(item => item.Id == id, ct);
+            .FirstOrDefaultAsync(item => item.Id == id && item.IsActive, ct);
 
         if (product == null) return null;
 
@@ -141,6 +141,19 @@ public class ProductService
         await _db.Entry(product).Reference(item => item.Category).LoadAsync(ct);
         _logger.LogInformation("Updated product {ProductId}", product.Id);
         return MapToResponse(product);
+    }
+
+    public async Task<bool> DeleteProductAsync(Guid id, CancellationToken ct = default)
+    {
+        var product = await _db.Products.FirstOrDefaultAsync(item => item.Id == id && item.IsActive, ct);
+        if (product == null) return false;
+
+        product.IsActive = false;
+        product.UpdatedAtUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        _logger.LogInformation("Deleted (deactivated) product {ProductId}", id);
+        return true;
     }
 
     private async Task ValidateCategoryAsync(Guid? categoryId, CancellationToken ct)
@@ -163,7 +176,7 @@ public class ProductService
         product.Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim();
         product.Price = request.Price;
         product.StockQuantity = request.StockQuantity;
-        product.Unit = request.Unit.Trim();
+        product.Unit = string.IsNullOrWhiteSpace(request.Unit) ? "item" : request.Unit.Trim();
         product.ImageUrl = string.IsNullOrWhiteSpace(request.ImageUrl) ? null : request.ImageUrl.Trim();
         product.IsActive = request.IsActive;
     }

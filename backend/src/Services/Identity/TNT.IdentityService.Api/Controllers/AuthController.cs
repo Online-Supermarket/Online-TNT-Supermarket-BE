@@ -134,4 +134,13 @@ public class AuthController : ControllerBase
 
         return userId;
     }
+
+    [HttpGet("debug-user")]
+    [AllowAnonymous]
+    public async Task<IActionResult> DebugUser([FromQuery] string email, [FromServices] TNT.IdentityService.Api.Data.IdentityDbContext db)
+    {
+        var user = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.FirstOrDefaultAsync(db.ApplicationUsers, u => u.Email == email);
+        if (user == null) return NotFound("User not found");
+        return Ok(new { user.Email, user.NormalizedEmail, user.IsActive, user.PasswordHash, user.Role });
+    }
 }

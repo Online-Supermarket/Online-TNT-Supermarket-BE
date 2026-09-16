@@ -40,6 +40,15 @@ public class ProductWebApplicationFactory : WebApplicationFactory<Program>
 
             services.AddDbContext<ProductDbContext>(options =>
                 options.UseInMemoryDatabase(_databaseName, _databaseRoot));
+
+            services.PostConfigure<Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerOptions>(
+                Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerDefaults.AuthenticationScheme,
+                options =>
+                {
+                    options.TokenValidationParameters.IssuerSigningKey =
+                        new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(
+                            System.Text.Encoding.UTF8.GetBytes(TestJwtSecretKey));
+                });
         });
     }
 }

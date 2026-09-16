@@ -23,21 +23,29 @@ try
         options.UseNpgsql(builder.Configuration.GetConnectionString("ProductDb")));
 
     var jwtSection = builder.Configuration.GetRequiredSection("Jwt");
+    var secretKey = jwtSection["SecretKey"];
+    if (string.IsNullOrWhiteSpace(secretKey))
+    {
+        secretKey = "REPLACE_WITH_ENV_VAR_OR_USER_SECRETS";
+    }
+
     builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-        .AddJwtBearer(options => options.TokenValidationParameters = new TokenValidationParameters
+        .AddJwtBearer(options =>
         {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = jwtSection["Issuer"],
-            ValidAudience = jwtSection["Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(jwtSection["SecretKey"]
-                    ?? throw new InvalidOperationException("Jwt:SecretKey is required."))),
-            NameClaimType = ClaimTypes.NameIdentifier,
-            RoleClaimType = ClaimTypes.Role,
-            ClockSkew = TimeSpan.Zero
+            options.IncludeErrorDetails = builder.Environment.IsDevelopment();
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidateAudience = true,
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
+                ValidIssuer = jwtSection["Issuer"],
+                ValidAudience = jwtSection["Audience"],
+                IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)),
+                NameClaimType = ClaimTypes.NameIdentifier,
+                RoleClaimType = ClaimTypes.Role,
+                ClockSkew = TimeSpan.Zero
+            };
         });
     builder.Services.AddAuthorization();
 
@@ -101,12 +109,33 @@ try
         using var scope = app.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
         db.Database.Migrate();
+        db.Database.ExecuteSqlRaw(@"
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='Categories' AND column_name='UpdatedAt') THEN
+                    ALTER TABLE ""Categories"" ALTER COLUMN ""UpdatedAt"" DROP NOT NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='Products' AND column_name='Unit') THEN
+                    ALTER TABLE ""Products"" ADD COLUMN ""Unit"" character varying(50) NOT NULL DEFAULT 'item';
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='Products' AND column_name='ImageUrl') THEN
+                    ALTER TABLE ""Products"" ADD COLUMN ""ImageUrl"" character varying(500) NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='Products' AND column_name='UpdatedAtUtc') THEN
+                    ALTER TABLE ""Products"" ADD COLUMN ""UpdatedAtUtc"" timestamp with time zone NULL;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='Products' AND column_name='IsActive') THEN
+                    ALTER TABLE ""Products"" ADD COLUMN ""IsActive"" boolean NOT NULL DEFAULT TRUE;
+                END IF;
+            END $$;
+        ");
     }
 
     app.UseSwagger();
     app.UseSwaggerUI();
     app.UseSerilogRequestLogging();
     app.UseCors("AllowFrontend");
+    app.UseStaticFiles();
     app.UseAuthentication();
     app.UseAuthorization();
     app.MapControllers();

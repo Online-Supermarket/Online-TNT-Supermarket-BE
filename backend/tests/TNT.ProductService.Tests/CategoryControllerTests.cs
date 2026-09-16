@@ -63,7 +63,7 @@ public class CategoryControllerTests : IClassFixture<ProductWebApplicationFactor
         body!.Name.Should().Be(update.Name);
         body.Description.Should().Be("Updated category");
         body.IsActive.Should().BeFalse();
-        body.UpdatedAtUtc.Should().NotBeNull();
+        body.UpdatedAt.Should().NotBeNull();
     }
 
     [Fact(DisplayName = "Staff_CanUpdateCategory")]
@@ -211,7 +211,6 @@ public class CategoryControllerTests : IClassFixture<ProductWebApplicationFactor
     {
         Name = name ?? $"Category-{Guid.NewGuid():N}",
         Description = "Test category",
-        ImageUrl = "https://example.com/category.png",
         IsActive = true
     };
 

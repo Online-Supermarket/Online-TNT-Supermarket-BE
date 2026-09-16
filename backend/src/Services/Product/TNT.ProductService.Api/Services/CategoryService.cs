@@ -51,7 +51,7 @@ public class CategoryService
         var category = new Category
         {
             Id = Guid.NewGuid(),
-            CreatedAtUtc = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow
         };
 
         ApplyRequest(category, request);
@@ -73,7 +73,7 @@ public class CategoryService
         }
 
         ApplyRequest(category, request);
-        category.UpdatedAtUtc = DateTime.UtcNow;
+        category.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation("Updated category {CategoryId}", category.Id);
@@ -96,7 +96,7 @@ public class CategoryService
         if (category == null) return null;
 
         category.IsActive = isActive;
-        category.UpdatedAtUtc = DateTime.UtcNow;
+        category.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
 
         _logger.LogInformation("{Action} category {CategoryId}", isActive ? "Activated" : "Deactivated", category.Id);
@@ -115,7 +115,6 @@ public class CategoryService
     {
         category.Name = request.Name.Trim();
         category.Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim();
-        category.ImageUrl = string.IsNullOrWhiteSpace(request.ImageUrl) ? null : request.ImageUrl.Trim();
         category.IsActive = request.IsActive;
     }
 
@@ -124,10 +123,9 @@ public class CategoryService
         Id = category.Id,
         Name = category.Name,
         Description = category.Description,
-        ImageUrl = category.ImageUrl,
         IsActive = category.IsActive,
-        CreatedAtUtc = category.CreatedAtUtc,
-        UpdatedAtUtc = category.UpdatedAtUtc
+        CreatedAt = category.CreatedAt,
+        UpdatedAt = category.UpdatedAt
     };
 }
 

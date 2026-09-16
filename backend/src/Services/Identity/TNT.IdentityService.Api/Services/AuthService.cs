@@ -91,14 +91,22 @@ public class AuthService : IAuthService
     public async Task<AuthResponse> LoginAsync(LoginRequest request, string? ipAddress, CancellationToken ct = default)
     {
         var normalizedEmail = NormalizeEmail(request.Email);
+        _logger.LogWarning("Attempting to find user with email: {Email}", normalizedEmail);
 
         var user = await _db.ApplicationUsers
             .FirstOrDefaultAsync(u => u.NormalizedEmail == normalizedEmail && u.IsActive, ct);
 
-        // Use a generic message — do not disclose whether email or password was wrong
-        if (user == null || !IsValidPassword(request.Password, user.PasswordHash))
+        if (user == null) 
         {
-            _logger.LogWarning("Failed login attempt for email: {Email}", normalizedEmail);
+            _logger.LogWarning("User NOT FOUND in database for email: {Email}", normalizedEmail);
+            throw new UnauthorizedException("Invalid credentials.");
+        }
+        
+        _logger.LogWarning("User FOUND! Id: {UserId}, Role: {Role}, Hash: {Hash}", user.Id, user.Role, user.PasswordHash);
+
+        if (!IsValidPassword(request.Password, user.PasswordHash))
+        {
+            _logger.LogWarning("Password mismatch for email: {Email}", normalizedEmail);
             throw new UnauthorizedException("Invalid credentials.");
         }
 

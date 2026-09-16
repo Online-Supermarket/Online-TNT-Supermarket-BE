@@ -170,26 +170,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ─── PostgreSQL — Inventory Database ────────────────────────────────────────
-  postgres-inventory:
-    image: postgres:16-alpine
-    container_name: tnt-postgres-inventory
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: InventoryDb
-    ports:
-      - "5438:5432"
-    volumes:
-      - postgres-inventory-data:/var/lib/postgresql/data
-    networks:
-      - tnt-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d InventoryDb"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # ─── Apache Kafka (KRaft mode — no ZooKeeper) ────────────────────────────────
   kafka:
@@ -239,7 +219,7 @@ services:
       - "5001:8080"
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__IdentityDb: "Host=postgres-identity;Port=5432;Database=IdentityDb;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__IdentityDb: "${ConnectionStrings__IdentityDb:-Host=postgres-identity;Port=5432;Database=IdentityDb;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}}"
       Jwt__Issuer: TNT.IdentityService
       Jwt__Audience: TNT.Supermarket
       Jwt__SecretKey: ${JWT_SECRET_KEY}
@@ -383,32 +363,6 @@ services:
     networks:
       - tnt-network
 
-  # ─── Inventory Service — Port 5007 ───────────────────────────────────────────
-  inventory-service:
-    build:
-      context: ../..
-      dockerfile: backend/infrastructure/Dockerfiles/Dockerfile.Inventory
-    container_name: tnt-inventory-service
-    restart: unless-stopped
-    ports:
-      - "5007:8080"
-    environment:
-      ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__InventoryDb: "Host=postgres-inventory;Port=5432;Database=InventoryDb;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
-      Jwt__Issuer: TNT.IdentityService
-      Jwt__Audience: TNT.Supermarket
-      Jwt__SecretKey: ${JWT_SECRET_KEY}
-      Cors__AllowedOrigin: ${CORS_ALLOWED_ORIGIN:-http://localhost:5173}
-      Kafka__Enabled: "true"
-      Kafka__BootstrapServers: kafka:9092
-      Kafka__ClientId: inventory-service
-    depends_on:
-      postgres-inventory:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-    networks:
-      - tnt-network
 
   # ─── Notification Service — Port 5008 ───────────────────────────────────────
   notification-service:
@@ -451,7 +405,7 @@ services:
       ReverseProxy__Clusters__order-cluster__Destinations__order-destination__Address: http://order-service:8080
       ReverseProxy__Clusters__cart-cluster__Destinations__cart-destination__Address: http://cart-service:8080
       ReverseProxy__Clusters__payment-cluster__Destinations__payment-destination__Address: http://payment-service:8080
-      ReverseProxy__Clusters__inventory-cluster__Destinations__inventory-destination__Address: http://inventory-service:8080
+
       ReverseProxy__Clusters__notification-cluster__Destinations__notification-destination__Address: http://notification-service:8080
     depends_on:
       - identity-service
@@ -460,6 +414,6 @@ services:
       - order-service
       - cart-service
       - payment-service
-      - inventory-service
+
     networks:
       - tnt-network
