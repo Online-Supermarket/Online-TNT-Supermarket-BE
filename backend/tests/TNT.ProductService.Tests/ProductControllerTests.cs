@@ -92,7 +92,7 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
         var category = await SeedCategoryAsync();
         var client = CreateClientForRole("Admin");
 
-        var response = await client.PostAsJsonAsync("/api/products", ValidProductRequest(category.Id));
+        var response = await client.PostAsync("/api/products", CreateMultipartContent(ValidProductRequest(category.Id)));
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
         var body = await response.Content.ReadFromJsonAsync<ProductResponse>(JsonOptions);
@@ -105,7 +105,7 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
     {
         var client = CreateClientForRole("Admin");
 
-        var response = await client.PostAsJsonAsync("/api/products", ValidProductRequest(Guid.NewGuid()));
+        var response = await client.PostAsync("/api/products", CreateMultipartContent(ValidProductRequest(Guid.NewGuid())));
 
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
@@ -115,7 +115,7 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
     {
         var client = CreateBuyerClient();
 
-        var response = await client.PostAsJsonAsync("/api/products", ValidProductRequest());
+        var response = await client.PostAsync("/api/products", CreateMultipartContent(ValidProductRequest()));
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
@@ -126,7 +126,7 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
         var category = await SeedCategoryAsync();
         var client = CreateClientForRole("Staff");
 
-        var response = await client.PostAsJsonAsync("/api/products", ValidProductRequest(category.Id));
+        var response = await client.PostAsync("/api/products", CreateMultipartContent(ValidProductRequest(category.Id)));
 
         response.StatusCode.Should().Be(HttpStatusCode.Created);
     }
@@ -137,7 +137,7 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
         var category = await SeedCategoryAsync();
         var admin = CreateClientForRole("Admin");
 
-        var createResponse = await admin.PostAsJsonAsync("/api/products", ValidProductRequest(category.Id));
+        var createResponse = await admin.PostAsync("/api/products", CreateMultipartContent(ValidProductRequest(category.Id)));
         createResponse.StatusCode.Should().Be(HttpStatusCode.Created);
         var created = await createResponse.Content.ReadFromJsonAsync<ProductResponse>(JsonOptions);
 
@@ -153,7 +153,7 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
             IsActive = true
         };
 
-        var updateResponse = await admin.PutAsJsonAsync($"/api/products/{created!.Id}", updateRequest);
+        var updateResponse = await admin.PutAsync($"/api/products/{created!.Id}", CreateMultipartContent(updateRequest));
 
         updateResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         var updated = await updateResponse.Content.ReadFromJsonAsync<ProductResponse>(JsonOptions);
@@ -172,7 +172,7 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
         var category = await SeedCategoryAsync();
         var admin = CreateClientForRole("Admin");
 
-        var createResponse = await admin.PostAsJsonAsync("/api/products", ValidProductRequest(category.Id));
+        var createResponse = await admin.PostAsync("/api/products", CreateMultipartContent(ValidProductRequest(category.Id)));
         var created = await createResponse.Content.ReadFromJsonAsync<ProductResponse>(JsonOptions);
 
         var deleteResponse = await admin.DeleteAsync($"/api/products/{created!.Id}");
@@ -190,10 +190,10 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
         var admin = CreateClientForRole("Admin");
         var customer = CreateBuyerClient();
 
-        var createResponse = await admin.PostAsJsonAsync("/api/products", ValidProductRequest(category.Id));
+        var createResponse = await admin.PostAsync("/api/products", CreateMultipartContent(ValidProductRequest(category.Id)));
         var created = await createResponse.Content.ReadFromJsonAsync<ProductResponse>(JsonOptions);
 
-        var updateResponse = await customer.PutAsJsonAsync($"/api/products/{created!.Id}", ValidProductRequest(category.Id));
+        var updateResponse = await customer.PutAsync($"/api/products/{created!.Id}", CreateMultipartContent(ValidProductRequest(category.Id)));
         updateResponse.StatusCode.Should().Be(HttpStatusCode.Forbidden);
 
         var deleteResponse = await customer.DeleteAsync($"/api/products/{created.Id}");
@@ -205,10 +205,10 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
     {
         var anonymous = _factory.CreateClient();
 
-        var createResponse = await anonymous.PostAsJsonAsync("/api/products", ValidProductRequest());
+        var createResponse = await anonymous.PostAsync("/api/products", CreateMultipartContent(ValidProductRequest()));
         createResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
-        var updateResponse = await anonymous.PutAsJsonAsync($"/api/products/{Guid.NewGuid()}", ValidProductRequest());
+        var updateResponse = await anonymous.PutAsync($"/api/products/{Guid.NewGuid()}", CreateMultipartContent(ValidProductRequest()));
         updateResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
         var deleteResponse = await anonymous.DeleteAsync($"/api/products/{Guid.NewGuid()}");
@@ -227,7 +227,7 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
             StockQuantity = -1
         };
 
-        var response = await admin.PostAsJsonAsync("/api/products", invalidRequest);
+        var response = await admin.PostAsync("/api/products", CreateMultipartContent(invalidRequest));
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
@@ -240,7 +240,7 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
         var getResponse = await admin.GetAsync($"/api/products/{nonExistentId}");
         getResponse.StatusCode.Should().Be(HttpStatusCode.NotFound);
 
-        var updateResponse = await admin.PutAsJsonAsync($"/api/products/{nonExistentId}", ValidProductRequest());
+        var updateResponse = await admin.PutAsync($"/api/products/{nonExistentId}", CreateMultipartContent(ValidProductRequest()));
         updateResponse.StatusCode.Should().Be(HttpStatusCode.NotFound);
 
         var deleteResponse = await admin.DeleteAsync($"/api/products/{nonExistentId}");
@@ -330,4 +330,33 @@ public class ProductControllerTests : IClassFixture<ProductWebApplicationFactory
         Unit = "item",
         IsActive = true
     };
+
+    private static MultipartFormDataContent CreateMultipartContent(ProductRequest request)
+    {
+        var content = new MultipartFormDataContent
+        {
+            { new StringContent(request.Name ?? string.Empty), "Name" },
+            { new StringContent(request.Price.ToString()), "Price" },
+            { new StringContent(request.StockQuantity.ToString()), "StockQuantity" },
+            { new StringContent(request.Unit ?? string.Empty), "Unit" },
+            { new StringContent(request.IsActive.ToString()), "IsActive" }
+        };
+
+        if (request.CategoryId.HasValue)
+        {
+            content.Add(new StringContent(request.CategoryId.Value.ToString()), "CategoryId");
+        }
+
+        if (!string.IsNullOrEmpty(request.Description))
+        {
+            content.Add(new StringContent(request.Description), "Description");
+        }
+
+        if (!string.IsNullOrEmpty(request.ImageUrl))
+        {
+            content.Add(new StringContent(request.ImageUrl), "ImageUrl");
+        }
+
+        return content;
+    }
 }
