@@ -16,10 +16,14 @@ RUN dotnet publish -c Release -o /out --no-restore
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 
-RUN addgroup --system tnt && adduser --system --ingroup tnt tnt
-USER tnt
+RUN addgroup --system tnt && adduser --system --ingroup tnt tnt && \
+    mkdir -p /app/wwwroot/images && \
+    chown -R tnt:tnt /app/wwwroot
 
 COPY --from=build /out .
+RUN chown -R tnt:tnt /app
+
+USER tnt
 
 ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
