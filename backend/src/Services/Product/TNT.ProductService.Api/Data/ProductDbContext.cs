@@ -51,12 +51,17 @@ public class ProductDbContext : DbContext
 
         modelBuilder.Entity<Product>(entity =>
         {
-            entity.ToTable("Products");
+            entity.ToTable("Products", t =>
+            {
+                t.HasCheckConstraint("ck_products_stockquantity_nonnegative", "\"StockQuantity\" >= 0");
+                t.HasCheckConstraint("ck_products_lowstockthreshold_nonnegative", "\"LowStockThreshold\" >= 0");
+            });
             entity.HasKey(product => product.Id);
             entity.Property(product => product.Name).IsRequired().HasMaxLength(200);
             entity.Property(product => product.Description).HasColumnType("text");
             entity.Property(product => product.Price).HasPrecision(10, 2);
             entity.Property(product => product.StockQuantity).IsRequired().HasDefaultValue(0);
+            entity.Property(product => product.LowStockThreshold).IsRequired().HasDefaultValue(10);
             entity.Property(product => product.Unit).IsRequired().HasMaxLength(50).HasDefaultValue("item");
             entity.Property(product => product.ImageUrl).HasMaxLength(500);
             entity.Property(product => product.IsActive).IsRequired().HasDefaultValue(true);
