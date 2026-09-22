@@ -34,6 +34,7 @@ services:
   identity-api:
     build: ./services/identity/Identity.Api
     environment:
+      ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__Identity: Host=postgres;Port=5432;Database=marketflow;Username=marketflow;Password=marketflow;Search Path=identity
       Auth__SigningKey: ${AUTH_SIGNING_KEY:-development-only-change-this-signing-key-32chars}
     depends_on:
@@ -41,6 +42,7 @@ services:
   catalog-api:
     build: ./services/catalog/Catalog.Api
     environment:
+      ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__Catalog: Host=postgres;Port=5432;Database=marketflow;Username=marketflow;Password=marketflow;Search Path=catalog
       Services__IdentityUrl: http://identity-api:8080
       Kafka__BootstrapServers: kafka:9092
@@ -52,6 +54,7 @@ services:
   order-api:
     build: ./services/order/Order.Api
     environment:
+      ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__Order: Host=postgres;Port=5432;Database=marketflow;Username=marketflow;Password=marketflow;Search Path=ordering
       Services__IdentityUrl: http://identity-api:8080
       Services__CatalogUrl: http://catalog-api:8080
@@ -65,6 +68,7 @@ services:
   reporting-api:
     build: ./services/reporting/Reporting.Api
     environment:
+      ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__Reporting: Host=postgres;Port=5432;Database=marketflow;Username=marketflow;Password=marketflow;Search Path=reporting
       Services__IdentityUrl: http://identity-api:8080
       Kafka__BootstrapServers: kafka:9092
@@ -79,10 +83,6 @@ services:
       MARKETFLOW_CORS_ORIGIN: ${MARKETFLOW_CORS_ORIGIN:-http://localhost:5173}
     ports: ["8080:8080"]
     depends_on: [identity-api, catalog-api, order-api]
-  frontend:
-    build: ./frontend
-    ports: ["5173:80"]
-    depends_on: [gateway]
   prometheus:
     image: prom/prometheus:v2.55.1
     volumes:
