@@ -1,0 +1,46 @@
+name: Deploy Identity API to Azure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/identity/Identity.Api/**
+      - .github/workflows/deploy-identity.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-identity-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # A manually dispatched run from develop is also prevented from deploying.
+    if: github.ref == 'refs/heads/main' && vars.AZURE_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign in to Azure Container Registry
+        run: az acr login --name "${{ secrets.AZURE_ACR_NAME }}"
+      - name: Build and push image
+        env:
+          IMAGE: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-identity:${{ github.sha }}
+        run: |
+          docker build --tag "$IMAGE" services/identity/Identity.Api
+          docker push "$IMAGE"
+      - name: Deploy container image
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ secrets.AZURE_WEBAPP_IDENTITY }}
+          images: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-identity:${{ github.sha }}
+      - name: Verify readiness
+        run: curl --fail --retry 12 --retry-all-errors --retry-delay 10 "https://${{ secrets.AZURE_WEBAPP_IDENTITY }}.azurewebsites.net/health/ready"

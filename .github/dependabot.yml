@@ -1,0 +1,37 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    target-branch: develop
+
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    target-branch: develop
+
+  - package-ecosystem: docker
+    directory: /services/identity/Identity.Api
+    schedule:
+      interval: weekly
+    target-branch: develop
+
+  - package-ecosystem: docker
+    directory: /services/catalog/Catalog.Api
+    schedule:
+      interval: weekly
+    target-branch: develop
+
+  - package-ecosystem: docker
+    directory: /services/order/Order.Api
+    schedule:
+      interval: weekly
+    target-branch: develop
+
+  - package-ecosystem: docker
+    directory: /gateway
+    schedule:
+      interval: weekly
+    target-branch: develop
