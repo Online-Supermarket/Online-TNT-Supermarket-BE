@@ -32,17 +32,11 @@ jobs:
 
       - name: Build and push image
         env:
-          IMAGE: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-gateway:${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
-          docker build --tag "$IMAGE" gateway
-          docker push "$IMAGE"
-
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v2
-        with:
-          app-name: tnt-supermarket-gateway
-          publish-profile: ${{ secrets.AZURE_GATEWAY_PUBLISH_PROFILE }}
-          images: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-gateway:${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Verify gateway health
-        run: curl --fail --retry 12 --retry-all-errors --retry-delay 10 "https://tnt-supermarket-gateway.azurewebsites.net/health"
+          docker build \
+            --tag "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-gateway:${SHA}" \
+            --tag "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-gateway:latest" \
+            gateway
+          docker push "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-gateway:${SHA}"
+          docker push "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-gateway:latest"

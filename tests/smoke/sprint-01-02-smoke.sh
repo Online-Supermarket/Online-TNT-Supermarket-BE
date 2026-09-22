@@ -32,7 +32,7 @@ status=$(curl --silent --show-error --output /tmp/marketflow-register.json --wri
 test "$status" = "201"
 grep -q 'accessToken' /tmp/marketflow-register.json
 
-docker compose restart identity-api catalog-api order-api
+docker compose -p "${COMPOSE_PROJECT_NAME:-marketflow-ci}" restart identity-api catalog-api order-api
 wait_for_ready identity
 wait_for_ready catalog
 wait_for_ready order
