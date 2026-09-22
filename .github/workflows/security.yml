@@ -15,7 +15,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  build-and-test:
+    name: Build and test gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Restore dependencies
+        run: dotnet restore Marketflow.slnx
+      - name: Build solution
+        run: dotnet build Marketflow.slnx --no-restore --configuration Release
+      - name: Run unit tests
+        run: dotnet test Marketflow.slnx --no-build --no-restore --configuration Release --verbosity normal
+        env:
+          ASPNETCORE_ENVIRONMENT: Testing
+
   secrets:
+    needs: build-and-test
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
@@ -27,6 +45,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   codeql:
+    needs: build-and-test
     name: CodeQL (.NET)
     runs-on: ubuntu-latest
     steps:
@@ -42,6 +61,7 @@ jobs:
       - uses: github/codeql-action/analyze@v4
 
   container-vulnerabilities:
+    needs: [secrets, codeql]
     name: Container scan (${{ matrix.service }})
     runs-on: ubuntu-latest
     strategy:
@@ -59,7 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build service image
-        run: docker build --tag marketflow-${{ matrix.service }}:${{ github.sha }} ${{ matrix.context }}
+        run: docker build --pull --tag marketflow-${{ matrix.service }}:${{ github.sha }} ${{ matrix.context }}
       - name: Fail on high or critical vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
