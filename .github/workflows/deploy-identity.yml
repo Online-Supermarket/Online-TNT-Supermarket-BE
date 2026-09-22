@@ -32,17 +32,11 @@ jobs:
 
       - name: Build and push image
         env:
-          IMAGE: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-identity:${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
-          docker build --tag "$IMAGE" services/identity/Identity.Api
-          docker push "$IMAGE"
-
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v2
-        with:
-          app-name: tnt-supermarket-identity
-          publish-profile: ${{ secrets.AZURE_IDENTITY_PUBLISH_PROFILE }}
-          images: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-identity:${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Verify readiness
-        run: curl --fail --retry 12 --retry-all-errors --retry-delay 10 "https://tnt-supermarket-identity-b6dqd6hfgdf4esgz.indiasouthcentral-01.azurewebsites.net/health/ready"
+          docker build \
+            --tag "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-identity:${SHA}" \
+            --tag "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-identity:latest" \
+            services/identity/Identity.Api
+          docker push "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-identity:${SHA}"
+          docker push "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-identity:latest"
