@@ -24,7 +24,7 @@ AZURE_WEBAPP_CATALOG
 AZURE_WEBAPP_ORDER
 ```
 
-The Azure identity must have permission to push to ACR and deploy to the three App Service apps. Configure an OpenID Connect federated credential for the GitHub repository and the `staging` environment. Set the repository variable `AZURE_DEPLOY_ENABLED=true` only after the secrets, App Service settings and ACR pull permissions are verified. Until then, the workflows are available through **Run workflow** without running on every push.
+The Azure identity must have permission to push to ACR and deploy to the three App Service apps. Configure an OpenID Connect federated credential for the GitHub repository and the `staging` environment. Set the repository variable `AZURE_DEPLOY_ENABLED=true` only after the secrets, App Service settings and ACR pull permissions are verified. Deployment jobs run only from `main`; a manual run from any other branch is skipped by the same branch gate.
 
 Set these service settings in the App Service configuration for the corresponding app: connection string, `Auth__SigningKey` for Identity, `Internal__Key` for Catalog, `Internal__CatalogKey` for Order, the Identity/Catalog service URLs, and Kafka broker settings. The apps also need private network connectivity to PostgreSQL, Kafka and each other. The default `azurewebsites.net/health/ready` URL is used as the smoke check; it verifies PostgreSQL for Identity and PostgreSQL plus Kafka for Catalog and Order.
 
