@@ -1,0 +1,180 @@
+openapi: 3.0.3
+info:
+  title: MarketFlow Sprint 1 and 2 APIs
+  version: 0.2.0
+  description: |
+    Contract for the Identity, Catalog and Order services. Browser clients use
+    the gateway prefixes /api/identity, /api/catalog and /api/order.
+servers:
+  - url: http://localhost:8080/api
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    Error:
+      type: object
+      properties:
+        message: { type: string }
+    AddressInput:
+      type: object
+      required: [recipientName, phone, line1, city, zone]
+      properties:
+        recipientName: { type: string }
+        phone: { type: string }
+        line1: { type: string }
+        line2: { type: string, nullable: true }
+        city: { type: string }
+        zone: { type: string }
+    ProductInput:
+      type: object
+      required: [sku, name, price, stockQuantity, categoryId]
+      properties:
+        sku: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        price: { type: number, format: decimal }
+        stockQuantity: { type: integer, minimum: 0 }
+        categoryId: { type: string, format: uuid }
+paths:
+  /identity/auth/register:
+    post:
+      summary: Register a Customer account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, displayName, password]
+              properties:
+                email: { type: string, format: email }
+                displayName: { type: string }
+                password: { type: string, format: password, minLength: 8 }
+      responses:
+        '201': { description: Customer account and access token created }
+        '400': { description: Invalid request }
+        '409': { description: Email already exists }
+  /identity/auth/login:
+    post:
+      summary: Sign in
+      responses:
+        '200': { description: Access token and user roles returned }
+        '401': { description: Invalid credentials }
+  /identity/admin/users:
+    get:
+      summary: List accounts
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Operations Admin account list }
+        '403': { description: Operations Admin role required }
+    post:
+      summary: Create staff or courier account
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Account created }
+        '403': { description: Operations Admin role required }
+  /catalog/products:
+    get:
+      summary: Browse active products
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: categoryId, in: query, schema: { type: string, format: uuid } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+      responses:
+        '200': { description: Product page }
+    post:
+      summary: Create a product
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductInput' }
+      responses:
+        '201': { description: Product created }
+        '400': { description: Invalid product }
+        '403': { description: Catalog Staff or Operations Admin required }
+        '409': { description: Duplicate SKU }
+  /catalog/products/{id}:
+    put:
+      summary: Update a product
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductInput' }
+      responses:
+        '204': { description: Product updated }
+        '404': { description: Product not found }
+  /catalog/reports/inventory:
+    get:
+      summary: Run the Catalog-owned inventory report
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: categoryId, in: query, schema: { type: string, format: uuid } }
+        - { name: threshold, in: query, schema: { type: integer, minimum: 0 } }
+      responses:
+        '200': { description: Inventory report and totals }
+        '403': { description: Inventory, Catalog or Operations role required }
+  /order/addresses:
+    get:
+      summary: List the caller's saved addresses
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Customer-owned addresses }
+    post:
+      summary: Create a saved address
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddressInput' }
+      responses:
+        '201': { description: Address created }
+        '403': { description: Customer role required }
+  /order/basket:
+    get:
+      summary: Read basket, price and availability preview
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Customer basket }
+  /order/orders:
+    post:
+      summary: Create an idempotent checkout request
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, maxLength: 160 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [addressId]
+              properties:
+                addressId: { type: string, format: uuid }
+      responses:
+        '200': { description: Existing or completed checkout result }
+        '409': { description: Idempotency key used with another intent }
+        '422': { description: Basket or stock rejected }
+  /order/reports/sales:
+    get:
+      summary: Run the Order-owned sales report
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: status, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Sales rows and recognised-total summary }
+        '403': { description: Operations Admin role required }

@@ -1,0 +1,18 @@
+<Solution>
+  <Folder Name="/services/" />
+  <Folder Name="/tests/">
+    <Project Path="tests/Marketflow.UnitTests/Marketflow.UnitTests.csproj" />
+  </Folder>
+  <Folder Name="/services/catalog/">
+    <Project Path="services/catalog/Catalog.Api/Catalog.Api.csproj" />
+  </Folder>
+  <Folder Name="/services/identity/">
+    <Project Path="services/identity/Identity.Api/Identity.Api.csproj" />
+  </Folder>
+  <Folder Name="/services/order/">
+    <Project Path="services/order/Order.Api/Order.Api.csproj" />
+  </Folder>
+  <Folder Name="/services/reporting/">
+    <Project Path="services/reporting/Reporting.Api/Reporting.Api.csproj" />
+  </Folder>
+</Solution>

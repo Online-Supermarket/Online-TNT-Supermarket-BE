@@ -1,0 +1,21 @@
+groups:
+  - name: marketflow-sprint-01-02
+    rules:
+      - alert: MarketflowServiceErrors
+        expr: sum by (service) (rate(marketflow_http_errors_total[5m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.service }} is returning server errors"
+      - alert: MarketflowOutboxBacklog
+        expr: marketflow_outbox_pending > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.service }} has unpublished outbox events"
+      - alert: MarketflowPendingReservations
+        expr: marketflow_pending_reservations > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Order has reservations awaiting reconciliation"
