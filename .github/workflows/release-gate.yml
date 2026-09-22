@@ -16,7 +16,7 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
@@ -35,7 +35,7 @@ jobs:
     needs: build-test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Run gitleaks
@@ -48,7 +48,7 @@ jobs:
     needs: secret-scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
@@ -74,7 +74,7 @@ jobs:
           - name: gateway
             context: gateway
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker build --pull -t marketflow-${{ matrix.name }}:${{ github.sha }} ${{ matrix.context }}
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -86,7 +86,7 @@ jobs:
     needs: container-scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker compose -p marketflow-release up --build --detach postgres kafka identity-api catalog-api order-api gateway
       - run: bash tests/smoke/sprint-01-02-functional.sh
         env:

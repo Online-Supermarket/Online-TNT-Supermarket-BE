@@ -19,7 +19,7 @@ jobs:
     name: Build and test gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
@@ -37,7 +37,7 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Run gitleaks
@@ -52,7 +52,7 @@ jobs:
     name: CodeQL (.NET)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
@@ -80,7 +80,7 @@ jobs:
           - service: gateway
             context: gateway
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build service image
         run: docker build --pull --tag marketflow-${{ matrix.service }}:${{ github.sha }} ${{ matrix.context }}
       - name: Fail on high or critical vulnerabilities
