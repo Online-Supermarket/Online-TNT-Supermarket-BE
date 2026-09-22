@@ -1,6 +1,0 @@
-@TNT.NotificationService.Api_HostAddress = http://localhost:5115
-
-GET {{TNT.NotificationService.Api_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###

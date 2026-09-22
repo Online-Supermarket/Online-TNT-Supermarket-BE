@@ -1,6 +1,0 @@
-@TNT.InventoryService.Api_HostAddress = http://localhost:5267
-
-GET {{TNT.InventoryService.Api_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###

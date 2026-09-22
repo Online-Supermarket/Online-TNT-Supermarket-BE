@@ -1,0 +1,36 @@
+name: Compose smoke test
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Gateway and service smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose manifest
+        run: docker compose config --quiet
+      - name: Start Sprint 1 and 2 services
+        run: docker compose -p marketflow-ci up --build --detach postgres kafka identity-api catalog-api order-api gateway
+      - name: Run smoke checks
+        run: bash tests/smoke/sprint-01-02-smoke.sh
+        env:
+          COMPOSE_PROJECT_NAME: marketflow-ci
+          MARKETFLOW_API_URL: http://localhost:8080/api
+      - name: Print service logs on failure
+        if: failure()
+        run: docker compose -p marketflow-ci logs --no-color
+      - name: Remove temporary stack
+        if: always()
+        run: docker compose -p marketflow-ci down --volumes --remove-orphans

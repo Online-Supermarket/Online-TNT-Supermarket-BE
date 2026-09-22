@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="Marketflow Sprint 1-2 baseline" enabled="true">
+      <stringProp name="TestPlan.comments">Run only against a disposable environment.</stringProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+    </TestPlan>
+    <hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Catalogue browsers" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">10</stringProp><stringProp name="ThreadGroup.ramp_time">10</stringProp><stringProp name="ThreadGroup.duration">60</stringProp><boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true"><boolProp name="LoopController.continue_forever">true</boolProp><stringProp name="LoopController.loops">-1</stringProp></elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Browse products" enabled="true"><stringProp name="HTTPSampler.domain">host.docker.internal</stringProp><stringProp name="HTTPSampler.port">8080</stringProp><stringProp name="HTTPSampler.protocol">http</stringProp><stringProp name="HTTPSampler.path">/api/catalog/products?page=1&amp;pageSize=20</stringProp><stringProp name="HTTPSampler.method">GET</stringProp></HTTPSamplerProxy>
+        <hashTree><ResponseAssertion guiclass="AssertionGui" testclass="ResponseAssertion" testname="HTTP 200" enabled="true"><collectionProp name="Asserion.test_strings"><stringProp name="status">200</stringProp></collectionProp><stringProp name="Assertion.test_field">Assertion.response_code</stringProp><intProp name="Assertion.test_type">8</intProp></ResponseAssertion><hashTree/></hashTree>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

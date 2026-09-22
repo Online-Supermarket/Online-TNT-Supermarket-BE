@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 15s
+rule_files:
+  - /etc/prometheus/alerts.yml
+scrape_configs:
+  - job_name: marketflow
+    static_configs:
+      - targets: ["identity-api:8080", "catalog-api:8080", "order-api:8080"]

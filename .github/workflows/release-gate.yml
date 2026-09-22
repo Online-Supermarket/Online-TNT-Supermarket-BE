@@ -1,0 +1,95 @@
+name: Release gate
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: release-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet restore Marketflow.slnx
+      - run: dotnet build Marketflow.slnx --no-restore --configuration Release
+      - run: dotnet test Marketflow.slnx --no-build --no-restore --configuration Release --collect:"XPlat Code Coverage" --results-directory TestResults
+        env:
+          ASPNETCORE_ENVIRONMENT: Testing
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-coverage
+          path: TestResults/**
+          if-no-files-found: warn
+  secret-scan:
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  codeql:
+    needs: secret-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: csharp
+          build-mode: manual
+      - run: dotnet build Marketflow.slnx --configuration Release
+      - uses: github/codeql-action/analyze@v4
+  container-scan:
+    needs: codeql
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: identity
+            context: services/identity/Identity.Api
+          - name: catalog
+            context: services/catalog/Catalog.Api
+          - name: order
+            context: services/order/Order.Api
+          - name: gateway
+            context: gateway
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --pull -t marketflow-${{ matrix.name }}:${{ github.sha }} ${{ matrix.context }}
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: marketflow-${{ matrix.name }}:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+  compose-smoke:
+    needs: container-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -p marketflow-release up --build --detach postgres kafka identity-api catalog-api order-api gateway
+      - run: bash tests/smoke/sprint-01-02-functional.sh
+        env:
+          COMPOSE_PROJECT_NAME: marketflow-release
+          MARKETFLOW_API_URL: http://localhost:8080/api
+      - if: failure()
+        run: docker compose -p marketflow-release logs --no-color
+      - if: always()
+        run: docker compose -p marketflow-release down --volumes --remove-orphans
