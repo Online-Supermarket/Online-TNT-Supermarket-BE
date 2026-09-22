@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Confluent.Kafka;
 using Npgsql;
+using NpgsqlTypes;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(builder.Configuration.GetConnectionString("Catalog") ?? "Host=localhost;Port=5432;Database=marketflow;Username=marketflow;Password=marketflow;Search Path=catalog"));
@@ -104,7 +105,18 @@ static class CatalogDb
     }
     public static async Task<OperationalMetrics> OperationalMetrics(NpgsqlDataSource db) { await using var cmd = db.CreateCommand("SELECT (SELECT count(*) FROM catalog.outbox WHERE published_at IS NULL), (SELECT count(*) FROM catalog.stock_reservations WHERE state='Failed')"); await using var reader = await cmd.ExecuteReaderAsync(); await reader.ReadAsync(); return new OperationalMetrics(reader.GetInt64(0), reader.GetInt64(1)); }
     public static async Task<IResult> Categories(NpgsqlDataSource db) { await using var cmd = db.CreateCommand("SELECT id,name FROM categories ORDER BY name"); await using var reader = await cmd.ExecuteReaderAsync(); var rows = new List<object>(); while (await reader.ReadAsync()) rows.Add(new { id = reader.GetGuid(0), name = reader.GetString(1) }); return Results.Ok(rows); }
-    public static async Task<IResult> Products(string? q, Guid? categoryId, int page, int pageSize, NpgsqlDataSource db) { page = Math.Max(1, page == 0 ? 1 : page); pageSize = Math.Clamp(pageSize == 0 ? 20 : pageSize, 1, 100); await using var cmd = db.CreateCommand("SELECT p.id,p.sku,p.name,p.description,p.price,p.stock_quantity,p.active,c.id,c.name FROM products p JOIN categories c ON c.id=p.category_id WHERE p.active=true AND ($1 IS NULL OR p.name ILIKE '%'||$1||'%' OR p.sku ILIKE '%'||$1||'%') AND ($2 IS NULL OR p.category_id=$2) ORDER BY p.name OFFSET $3 LIMIT $4"); cmd.Parameters.AddWithValue((object?)q?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)categoryId ?? DBNull.Value); cmd.Parameters.AddWithValue((page - 1) * pageSize); cmd.Parameters.AddWithValue(pageSize); return Results.Ok(await ReadProducts(cmd)); }
+    public static async Task<IResult> Products(string? q, Guid? categoryId, int page, int pageSize, NpgsqlDataSource db)
+    {
+        page = Math.Max(1, page == 0 ? 1 : page);
+        pageSize = Math.Clamp(pageSize == 0 ? 20 : pageSize, 1, 100);
+        await using var cmd = db.CreateCommand("SELECT p.id,p.sku,p.name,p.description,p.price,p.stock_quantity,p.active,c.id,c.name FROM products p JOIN categories c ON c.id=p.category_id WHERE p.active=true AND ($1 IS NULL OR p.name ILIKE '%'||$1||'%' OR p.sku ILIKE '%'||$1||'%') AND ($2 IS NULL OR p.category_id=$2) ORDER BY p.name OFFSET $3 LIMIT $4");
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Text, (object?)q?.Trim() ?? DBNull.Value);
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Uuid, (object?)categoryId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue((page - 1) * pageSize);
+        cmd.Parameters.AddWithValue(pageSize);
+        return Results.Ok(await ReadProducts(cmd));
+    }
+
     public static async Task<IResult> Product(Guid id, NpgsqlDataSource db) { await using var cmd = db.CreateCommand("SELECT p.id,p.sku,p.name,p.description,p.price,p.stock_quantity,p.active,c.id,c.name FROM products p JOIN categories c ON c.id=p.category_id WHERE p.id=$1 AND p.active=true"); cmd.Parameters.AddWithValue(id); var item = (await ReadProducts(cmd)).SingleOrDefault(); return item is null ? Results.NotFound() : Results.Ok(item); }
     public static async Task<List<object>> ReadProducts(NpgsqlDataSource db, bool all) { await using var cmd = db.CreateCommand($"SELECT p.id,p.sku,p.name,p.description,p.price,p.stock_quantity,p.active,c.id,c.name FROM products p JOIN categories c ON c.id=p.category_id {(all ? "" : "WHERE p.active=true")} ORDER BY p.name"); return await ReadProducts(cmd); }
     static async Task<List<object>> ReadProducts(NpgsqlCommand cmd) { await using var reader = await cmd.ExecuteReaderAsync(); var rows = new List<object>(); while (await reader.ReadAsync()) rows.Add(new { id = reader.GetGuid(0), sku = reader.GetString(1), name = reader.GetString(2), description = reader.IsDBNull(3) ? null : reader.GetString(3), price = reader.GetDecimal(4), stockQuantity = reader.GetInt32(5), available = reader.GetInt32(5) > 0, active = reader.GetBoolean(6), category = new { id = reader.GetGuid(7), name = reader.GetString(8) } }); return rows; }
@@ -124,9 +136,56 @@ static class CatalogDb
         await AuditAndOutbox(conn, tx, (await Snapshot(conn, tx, id))!, "ProductChanged", actor, correlation); await tx.CommitAsync(); return true;
     }
     static async Task<ProductSnapshot?> Snapshot(NpgsqlConnection conn, NpgsqlTransaction tx, Guid id) { await using var cmd = new NpgsqlCommand("SELECT id,sku,name,price,stock_quantity,active,category_id FROM catalog.products WHERE id=$1", conn, tx); cmd.Parameters.AddWithValue(id); await using var reader = await cmd.ExecuteReaderAsync(); return await reader.ReadAsync() ? new ProductSnapshot(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetDecimal(3), reader.GetInt32(4), reader.GetBoolean(5), reader.GetGuid(6)) : null; }
-    static async Task AuditAndOutbox(NpgsqlConnection conn, NpgsqlTransaction tx, ProductSnapshot product, string type, Guid actor, Guid correlation) { var eventId = Guid.NewGuid(); var payload = JsonSerializer.Serialize(new { eventId, schemaVersion = 1, eventType = type, occurredAt = DateTimeOffset.UtcNow, correlationId = correlation, productId = product.Id, sku = product.Sku, name = product.Name, price = product.Price, stockQuantity = product.StockQuantity, active = product.Active, categoryId = product.CategoryId }); await using var cmd = new NpgsqlCommand("INSERT INTO catalog.audit_log(product_id,action,actor_id) VALUES($1,$2,$3); INSERT INTO catalog.outbox(event_id,event_type,payload) VALUES($4,$2,CAST($5 AS jsonb))", conn, tx); cmd.Parameters.AddWithValue(product.Id); cmd.Parameters.AddWithValue(type); cmd.Parameters.AddWithValue(actor); cmd.Parameters.AddWithValue(eventId); cmd.Parameters.AddWithValue(payload); await cmd.ExecuteNonQueryAsync(); }
+    static async Task AuditAndOutbox(NpgsqlConnection conn, NpgsqlTransaction tx, ProductSnapshot product, string type, Guid actor, Guid correlation)
+    {
+        var eventId = Guid.NewGuid();
+        var payload = JsonSerializer.Serialize(new
+        {
+            eventId,
+            schemaVersion = 1,
+            eventType = type,
+            occurredAt = DateTimeOffset.UtcNow,
+            correlationId = correlation,
+            productId = product.Id,
+            sku = product.Sku,
+            name = product.Name,
+            price = product.Price,
+            stockQuantity = product.StockQuantity,
+            active = product.Active,
+            categoryId = product.CategoryId
+        });
+
+        await using (var audit = new NpgsqlCommand("INSERT INTO catalog.audit_log(product_id,action,actor_id) VALUES($1,$2,$3)", conn, tx))
+        {
+            audit.Parameters.AddWithValue(product.Id);
+            audit.Parameters.AddWithValue(type);
+            audit.Parameters.AddWithValue(actor);
+            await audit.ExecuteNonQueryAsync();
+        }
+
+        await using var outbox = new NpgsqlCommand("INSERT INTO catalog.outbox(event_id,event_type,payload) VALUES($1,$2,CAST($3 AS jsonb))", conn, tx);
+        outbox.Parameters.AddWithValue(eventId);
+        outbox.Parameters.AddWithValue(type);
+        outbox.Parameters.AddWithValue(payload);
+        await outbox.ExecuteNonQueryAsync();
+    }
+
     static async Task StockMovement(NpgsqlConnection conn, NpgsqlTransaction tx, Guid productId, int delta, string reason, Guid? actor, Guid correlation) { await using var cmd = new NpgsqlCommand("INSERT INTO catalog.stock_movements(product_id,quantity_delta,reason,actor_id,correlation_id) VALUES($1,$2,$3,$4,$5)", conn, tx); cmd.Parameters.AddWithValue(productId); cmd.Parameters.AddWithValue(delta); cmd.Parameters.AddWithValue(reason); cmd.Parameters.AddWithValue((object?)actor ?? DBNull.Value); cmd.Parameters.AddWithValue(correlation); await cmd.ExecuteNonQueryAsync(); }
-    public static async Task<InventoryReport> Inventory(NpgsqlDataSource db, Guid? categoryId, int threshold) { threshold = Math.Max(0, threshold); await using var cmd = db.CreateCommand("SELECT p.sku,p.name,c.name,p.price,p.stock_quantity,p.active FROM catalog.products p JOIN catalog.categories c ON c.id=p.category_id WHERE p.active=true AND ($1 IS NULL OR p.category_id=$1) ORDER BY p.stock_quantity,p.name"); cmd.Parameters.AddWithValue((object?)categoryId ?? DBNull.Value); await using var reader = await cmd.ExecuteReaderAsync(); var rows = new List<InventoryRow>(); while (await reader.ReadAsync()) { var stock = reader.GetInt32(4); rows.Add(new InventoryRow(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetDecimal(3), stock, stock <= threshold, reader.GetBoolean(5))); } return new InventoryReport(rows.Count, rows.Count(x => x.LowStock), rows.Count(x => x.StockQuantity == 0), DateTimeOffset.UtcNow, rows); }
+    public static async Task<InventoryReport> Inventory(NpgsqlDataSource db, Guid? categoryId, int threshold)
+    {
+        threshold = Math.Max(0, threshold);
+        await using var cmd = db.CreateCommand("SELECT p.sku,p.name,c.name,p.price,p.stock_quantity,p.active FROM catalog.products p JOIN catalog.categories c ON c.id=p.category_id WHERE p.active=true AND ($1 IS NULL OR p.category_id=$1) ORDER BY p.stock_quantity,p.name");
+        cmd.Parameters.AddWithValue(NpgsqlDbType.Uuid, (object?)categoryId ?? DBNull.Value);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        var rows = new List<InventoryRow>();
+        while (await reader.ReadAsync())
+        {
+            var stock = reader.GetInt32(4);
+            rows.Add(new InventoryRow(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetDecimal(3), stock, stock <= threshold, reader.GetBoolean(5)));
+        }
+        return new InventoryReport(rows.Count, rows.Count(x => x.LowStock), rows.Count(x => x.StockQuantity == 0), DateTimeOffset.UtcNow, rows);
+    }
+
     public static async Task<ReservationResult> Reserve(NpgsqlDataSource db, ReservationRequest request)
     {
         await using var conn = await db.OpenConnectionAsync(); await using var tx = await conn.BeginTransactionAsync();
