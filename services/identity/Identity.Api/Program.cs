@@ -9,7 +9,10 @@ builder.Services.AddSingleton<TokenService>();
 builder.Services.AddSingleton<RequestMetrics>();
 var app = builder.Build();
 app.Use(async (ctx, next) => { var correlation = ctx.Request.Headers["X-Correlation-Id"].FirstOrDefault() ?? Guid.NewGuid().ToString(); ctx.Response.Headers["X-Correlation-Id"] = correlation; var stopwatch = System.Diagnostics.Stopwatch.StartNew(); using (app.Logger.BeginScope(new Dictionary<string, object?> { ["CorrelationId"] = correlation })) { try { await next(); } finally { ctx.RequestServices.GetRequiredService<RequestMetrics>().Record(ctx.Response.StatusCode, stopwatch.Elapsed); } } });
-await Database.InitializeAsync(app.Services.GetRequiredService<NpgsqlDataSource>());
+var applyMigrations = app.Environment.IsDevelopment() || builder.Configuration.GetValue<bool>("Migrations:ApplyOnStartup");
+if (applyMigrations)
+    await Database.InitializeAsync(app.Services.GetRequiredService<NpgsqlDataSource>(), app.Environment.IsDevelopment() || builder.Configuration.GetValue<bool>("Seed:DemoData"));
+if (applyMigrations && builder.Configuration.GetValue<bool>("Migrations:ExitAfterApply")) return;
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "identity" }));
 app.MapGet("/health/ready", async (NpgsqlDataSource db) =>
 {
@@ -44,7 +47,7 @@ app.MapGet("/auth/introspect", async (HttpRequest request, NpgsqlDataSource db, 
     await using var cmd = db.CreateCommand("SELECT u.email,u.display_name,u.roles FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.active=true"); cmd.Parameters.AddWithValue(TokenService.Hash(token)); await using var reader = await cmd.ExecuteReaderAsync();
     return await reader.ReadAsync() ? Results.Ok(new { active = true, subject = payload.Subject, email = reader.GetString(0), displayName = reader.GetString(1), roles = reader.GetFieldValue<string[]>(2), expiresAt = payload.ExpiresAt }) : Results.Ok(new { active = false });
 });
-app.MapGet("/users/me", async (HttpRequest request, NpgsqlDataSource db, TokenService tokens) => { var token = TokenService.GetBearer(request); if (token is null || !tokens.TryRead(token, out var payload)) return Results.Unauthorized(); await using var cmd = db.CreateCommand("SELECT email,display_name,roles FROM users WHERE id=$1 AND active=true"); cmd.Parameters.AddWithValue(payload.Subject); await using var r = await cmd.ExecuteReaderAsync(); return await r.ReadAsync() ? Results.Ok(new { id = payload.Subject, email = r.GetString(0), displayName = r.GetString(1), roles = r.GetFieldValue<string[]>(2) }) : Results.Unauthorized(); });
+app.MapGet("/users/me", async (HttpRequest request, NpgsqlDataSource db, TokenService tokens) => { var token = TokenService.GetBearer(request); if (token is null || !tokens.TryRead(token, out var payload)) return Results.Unauthorized(); await using var cmd = db.CreateCommand("SELECT u.email,u.display_name,u.roles FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.active=true"); cmd.Parameters.AddWithValue(TokenService.Hash(token)); await using var r = await cmd.ExecuteReaderAsync(); return await r.ReadAsync() ? Results.Ok(new { id = payload.Subject, email = r.GetString(0), displayName = r.GetString(1), roles = r.GetFieldValue<string[]>(2) }) : Results.Unauthorized(); });
 app.MapGet("/admin/users", async (HttpRequest request, NpgsqlDataSource db, TokenService tokens) =>
 {
     if (!await IdentityAuth.IsAdmin(request, db, tokens)) return Results.Forbid();
@@ -95,7 +98,7 @@ record IdentityPrincipal(Guid Id, string[] Roles);
 record TokenPayload(Guid Subject, DateTimeOffset ExpiresAt);
 static class Database
 {
-    public static async Task InitializeAsync(NpgsqlDataSource db)
+    public static async Task InitializeAsync(NpgsqlDataSource db, bool seedDemoData)
     {
         await using (var history = db.CreateCommand("CREATE SCHEMA IF NOT EXISTS identity; CREATE TABLE IF NOT EXISTS identity.schema_migrations(version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());")) await history.ExecuteNonQueryAsync();
         await using var conn = await db.OpenConnectionAsync();
@@ -105,7 +108,7 @@ static class Database
         var sql = await MigrationSql.BaselineAsync();
         await using var cmd = new NpgsqlCommand(sql, conn, tx);
         await cmd.ExecuteNonQueryAsync();
-        foreach (var user in new[] { new User(Guid.Parse("11111111-1111-1111-1111-111111111111"), "admin@marketflow.local", "Marketflow Admin", ["OperationsAdmin", "CatalogStaff", "InventoryStaff"]), new User(Guid.Parse("22222222-2222-2222-2222-222222222222"), "customer@marketflow.local", "Demo Customer", ["Customer"]) }) { await using var seed = new NpgsqlCommand("INSERT INTO identity.users(id,email,display_name,password_hash,roles) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(email) DO NOTHING", conn, tx); seed.Parameters.AddWithValue(user.Id); seed.Parameters.AddWithValue(user.Email); seed.Parameters.AddWithValue(user.DisplayName); seed.Parameters.AddWithValue(Password.Hash("ChangeMe!123")); seed.Parameters.AddWithValue(user.Roles); await seed.ExecuteNonQueryAsync(); }
+        if (seedDemoData) foreach (var user in new[] { new User(Guid.Parse("11111111-1111-1111-1111-111111111111"), "admin@marketflow.local", "Marketflow Admin", ["OperationsAdmin", "CatalogStaff", "InventoryStaff"]), new User(Guid.Parse("22222222-2222-2222-2222-222222222222"), "customer@marketflow.local", "Demo Customer", ["Customer"]) }) { await using var seed = new NpgsqlCommand("INSERT INTO identity.users(id,email,display_name,password_hash,roles) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(email) DO NOTHING", conn, tx); seed.Parameters.AddWithValue(user.Id); seed.Parameters.AddWithValue(user.Email); seed.Parameters.AddWithValue(user.DisplayName); seed.Parameters.AddWithValue(Password.Hash("ChangeMe!123")); seed.Parameters.AddWithValue(user.Roles); await seed.ExecuteNonQueryAsync(); }
         await tx.CommitAsync();
     }
 }

@@ -12,7 +12,10 @@ builder.Services.AddSingleton<RequestMetrics>();
 builder.Services.AddHostedService<OutboxPublisher>();
 var app = builder.Build();
 app.Use(async (context, next) => { var correlation = context.Request.Headers["X-Correlation-Id"].FirstOrDefault() ?? Guid.NewGuid().ToString(); context.Response.Headers["X-Correlation-Id"] = correlation; var stopwatch = System.Diagnostics.Stopwatch.StartNew(); using (app.Logger.BeginScope(new Dictionary<string, object?> { ["CorrelationId"] = correlation })) { try { await next(); } finally { context.RequestServices.GetRequiredService<RequestMetrics>().Record(context.Response.StatusCode, stopwatch.Elapsed); } } });
-await CatalogDb.InitializeAsync(app.Services.GetRequiredService<NpgsqlDataSource>());
+var applyMigrations = app.Environment.IsDevelopment() || builder.Configuration.GetValue<bool>("Migrations:ApplyOnStartup");
+if (applyMigrations)
+    await CatalogDb.InitializeAsync(app.Services.GetRequiredService<NpgsqlDataSource>(), app.Environment.IsDevelopment() || builder.Configuration.GetValue<bool>("Seed:DemoData"));
+if (applyMigrations && builder.Configuration.GetValue<bool>("Migrations:ExitAfterApply")) return;
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "catalog" }));
 app.MapGet("/health/ready", async (NpgsqlDataSource db, IConfiguration cfg) => await DependencyHealth.Ready(db, cfg, "catalog"));
@@ -91,7 +94,7 @@ sealed class IdentityClient(HttpClient http)
 
 static class CatalogDb
 {
-    public static async Task InitializeAsync(NpgsqlDataSource db)
+    public static async Task InitializeAsync(NpgsqlDataSource db, bool seedDemoData)
     {
         await using (var history = db.CreateCommand("CREATE SCHEMA IF NOT EXISTS catalog; CREATE TABLE IF NOT EXISTS catalog.schema_migrations(version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());")) await history.ExecuteNonQueryAsync();
         await using var conn = await db.OpenConnectionAsync();
@@ -100,7 +103,7 @@ static class CatalogDb
         if (await claim.ExecuteScalarAsync() is null) { await tx.CommitAsync(); return; }
         var sql = await MigrationSql.BaselineAsync();
         await using var cmd = new NpgsqlCommand(sql, conn, tx); await cmd.ExecuteNonQueryAsync();
-        foreach (var category in new[] { ("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Fruit & Vegetables"), ("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Pantry") }) { await using var seed = new NpgsqlCommand("INSERT INTO catalog.categories(id,name) VALUES($1,$2) ON CONFLICT DO NOTHING", conn, tx); seed.Parameters.AddWithValue(Guid.Parse(category.Item1)); seed.Parameters.AddWithValue(category.Item2); await seed.ExecuteNonQueryAsync(); }
+        if (seedDemoData) foreach (var category in new[] { ("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "Fruit & Vegetables"), ("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Pantry") }) { await using var seed = new NpgsqlCommand("INSERT INTO catalog.categories(id,name) VALUES($1,$2) ON CONFLICT DO NOTHING", conn, tx); seed.Parameters.AddWithValue(Guid.Parse(category.Item1)); seed.Parameters.AddWithValue(category.Item2); await seed.ExecuteNonQueryAsync(); }
         await tx.CommitAsync();
     }
     public static async Task<OperationalMetrics> OperationalMetrics(NpgsqlDataSource db) { await using var cmd = db.CreateCommand("SELECT (SELECT count(*) FROM catalog.outbox WHERE published_at IS NULL), (SELECT count(*) FROM catalog.stock_reservations WHERE state='Failed')"); await using var reader = await cmd.ExecuteReaderAsync(); await reader.ReadAsync(); return new OperationalMetrics(reader.GetInt64(0), reader.GetInt64(1)); }
