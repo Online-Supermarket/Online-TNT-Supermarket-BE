@@ -1,0 +1,10 @@
+{
+  "annotations": {"list": []}, "editable": true, "panels": [
+    {"type":"stat", "title":"HTTP requests", "targets":[{"expr":"sum(marketflow_http_requests_total)"}], "gridPos":{"h":8,"w":12,"x":0,"y":0}},
+    {"type":"timeseries", "title":"Requests by service", "targets":[{"expr":"sum by (service) (rate(marketflow_http_requests_total[5m]))"}], "gridPos":{"h":8,"w":12,"x":12,"y":0}},
+    {"type":"timeseries", "title":"HTTP error rate", "targets":[{"expr":"sum by (service) (rate(marketflow_http_errors_total[5m]))"}], "gridPos":{"h":8,"w":12,"x":0,"y":8}},
+    {"type":"timeseries", "title":"Average request duration", "targets":[{"expr":"sum by (service) (rate(marketflow_http_request_duration_seconds_sum[5m])) / sum by (service) (rate(marketflow_http_request_duration_seconds_count[5m]))"}], "gridPos":{"h":8,"w":12,"x":12,"y":8}},
+    {"type":"timeseries", "title":"Unpublished outbox events", "targets":[{"expr":"marketflow_outbox_pending"}], "gridPos":{"h":8,"w":12,"x":0,"y":16}},
+    {"type":"timeseries", "title":"Reservation exceptions", "targets":[{"expr":"marketflow_pending_reservations or marketflow_failed_reservations_total"}], "gridPos":{"h":8,"w":12,"x":12,"y":16}}
+  ], "schemaVersion":39, "title":"Marketflow Sprint 01–02", "version":3
+}
