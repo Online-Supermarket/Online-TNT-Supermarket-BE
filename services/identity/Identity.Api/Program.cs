@@ -37,7 +37,7 @@ app.MapPost("/auth/register", async (RegisterRequest request, NpgsqlDataSource d
 {
     if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.DisplayName) || string.IsNullOrWhiteSpace(request.Password) || request.Password.Length < 8) return Results.ValidationProblem(new Dictionary<string, string[]> { ["registration"] = ["Name, email and a password of at least 8 characters are required."] });
     var user = new User(Guid.NewGuid(), request.Email.Trim(), request.DisplayName.Trim(), ["Customer"]);
-    try { await using var cmd = db.CreateCommand("INSERT INTO users(id,email,display_name,password_hash,roles) VALUES($1,$2,$3,$4,$5)"); cmd.Parameters.AddWithValue(user.Id); cmd.Parameters.AddWithValue(user.Email); cmd.Parameters.AddWithValue(user.DisplayName); cmd.Parameters.AddWithValue(Password.Hash(request.Password)); cmd.Parameters.AddWithValue(user.Roles); await cmd.ExecuteNonQueryAsync(); var token = tokens.Create(user); await using var session = db.CreateCommand("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,$3)"); session.Parameters.AddWithValue(TokenService.Hash(token)); session.Parameters.AddWithValue(user.Id); session.Parameters.AddWithValue(DateTimeOffset.UtcNow.AddHours(8)); await session.ExecuteNonQueryAsync(); return Results.Created("/users/me", new { accessToken = token, tokenType = "Bearer", expiresInSeconds = 28800, user = new { user.Id, user.Email, user.DisplayName, roles = user.Roles } }); }
+    try { await using var cmd = db.CreateCommand("INSERT INTO users(id,email,display_name,password_hash,roles,full_name,id_number,contact_number,district,address) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"); cmd.Parameters.AddWithValue(user.Id); cmd.Parameters.AddWithValue(user.Email); cmd.Parameters.AddWithValue(user.DisplayName); cmd.Parameters.AddWithValue(Password.Hash(request.Password)); cmd.Parameters.AddWithValue(user.Roles); cmd.Parameters.AddWithValue((object?)request.FullName?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)request.IdNumber?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)request.ContactNumber?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)request.District?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)request.Address?.Trim() ?? DBNull.Value); await cmd.ExecuteNonQueryAsync(); var token = tokens.Create(user); await using var session = db.CreateCommand("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,$3)"); session.Parameters.AddWithValue(TokenService.Hash(token)); session.Parameters.AddWithValue(user.Id); session.Parameters.AddWithValue(DateTimeOffset.UtcNow.AddHours(8)); await session.ExecuteNonQueryAsync(); return Results.Created("/users/me", new { accessToken = token, tokenType = "Bearer", expiresInSeconds = 28800, user = new { user.Id, user.Email, user.DisplayName, roles = user.Roles } }); }
     catch (PostgresException e) when (e.SqlState == "23505") { return Results.Conflict(new { message = "An account with that email already exists." }); }
 });
 app.MapPost("/auth/logout", async (HttpRequest request, NpgsqlDataSource db) => { var token = TokenService.GetBearer(request); if (token is null) return Results.Unauthorized(); await using var cmd = db.CreateCommand("UPDATE sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL"); cmd.Parameters.AddWithValue(TokenService.Hash(token)); await cmd.ExecuteNonQueryAsync(); return Results.NoContent(); });
@@ -47,10 +47,10 @@ app.MapGet("/auth/introspect", async (HttpRequest request, NpgsqlDataSource db, 
     await using var cmd = db.CreateCommand("SELECT u.email,u.display_name,u.roles FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.active=true"); cmd.Parameters.AddWithValue(TokenService.Hash(token)); await using var reader = await cmd.ExecuteReaderAsync();
     return await reader.ReadAsync() ? Results.Ok(new { active = true, subject = payload.Subject, email = reader.GetString(0), displayName = reader.GetString(1), roles = reader.GetFieldValue<string[]>(2), expiresAt = payload.ExpiresAt }) : Results.Ok(new { active = false });
 });
-app.MapGet("/users/me", async (HttpRequest request, NpgsqlDataSource db, TokenService tokens) => { var token = TokenService.GetBearer(request); if (token is null || !tokens.TryRead(token, out var payload)) return Results.Unauthorized(); await using var cmd = db.CreateCommand("SELECT u.email,u.display_name,u.roles FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.active=true"); cmd.Parameters.AddWithValue(TokenService.Hash(token)); await using var r = await cmd.ExecuteReaderAsync(); return await r.ReadAsync() ? Results.Ok(new { id = payload.Subject, email = r.GetString(0), displayName = r.GetString(1), roles = r.GetFieldValue<string[]>(2) }) : Results.Unauthorized(); });
+app.MapGet("/users/me", async (HttpRequest request, NpgsqlDataSource db, TokenService tokens) => { var token = TokenService.GetBearer(request); if (token is null || !tokens.TryRead(token, out var payload)) return Results.StatusCode(401); await using var cmd = db.CreateCommand("SELECT u.email,u.display_name,u.roles FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.active=true"); cmd.Parameters.AddWithValue(TokenService.Hash(token)); await using var r = await cmd.ExecuteReaderAsync(); return await r.ReadAsync() ? Results.Ok(new { id = payload.Subject, email = r.GetString(0), displayName = r.GetString(1), roles = r.GetFieldValue<string[]>(2) }) : Results.StatusCode(401); });
 app.MapGet("/admin/users", async (HttpRequest request, NpgsqlDataSource db, TokenService tokens) =>
 {
-    if (!await IdentityAuth.IsAdmin(request, db, tokens)) return Results.Forbid();
+    if (!await IdentityAuth.IsAdmin(request, db, tokens)) return Results.StatusCode(403);
     await using var cmd = db.CreateCommand("SELECT id,email,display_name,roles,active,created_at FROM users ORDER BY created_at DESC");
     await using var reader = await cmd.ExecuteReaderAsync(); var rows = new List<object>();
     while (await reader.ReadAsync()) rows.Add(new { id = reader.GetGuid(0), email = reader.GetString(1), displayName = reader.GetString(2), roles = reader.GetFieldValue<string[]>(3), active = reader.GetBoolean(4), createdAt = reader.GetFieldValue<DateTimeOffset>(5) });
@@ -58,9 +58,9 @@ app.MapGet("/admin/users", async (HttpRequest request, NpgsqlDataSource db, Toke
 });
 app.MapPost("/admin/users", async (AdminUserRequest request, HttpRequest http, NpgsqlDataSource db, TokenService tokens) =>
 {
-    if (!await IdentityAuth.IsAdmin(http, db, tokens)) return Results.Forbid();
+    if (!await IdentityAuth.IsAdmin(http, db, tokens)) return Results.StatusCode(403);
     var errors = AdminUserRequest.Validate(request); if (errors.Count > 0) return Results.ValidationProblem(errors);
-    var user = new User(Guid.NewGuid(), request.Email.Trim(), request.DisplayName.Trim(), request.Roles.Distinct(StringComparer.Ordinal).ToArray());
+    var user = new User(Guid.NewGuid(), request.Email.Trim(), request.DisplayName.Trim(), IdentityRoles.NormalizeAll(request.Roles));
     try
     {
         await using var cmd = db.CreateCommand("INSERT INTO users(id,email,display_name,password_hash,roles) VALUES($1,$2,$3,$4,$5)");
@@ -71,8 +71,8 @@ app.MapPost("/admin/users", async (AdminUserRequest request, HttpRequest http, N
 });
 app.MapPut("/admin/users/{id:guid}/roles", async (Guid id, RoleUpdateRequest request, HttpRequest http, NpgsqlDataSource db, TokenService tokens) =>
 {
-    var admin = await IdentityAuth.Principal(http, db, tokens); if (admin is null || !admin.Roles.Contains("OperationsAdmin")) return Results.Forbid();
-    var roles = request.Roles.Distinct(StringComparer.Ordinal).ToArray();
+    var admin = await IdentityAuth.Principal(http, db, tokens); if (admin is null || !admin.Roles.Contains("OperationsAdmin")) return Results.StatusCode(403);
+    var roles = IdentityRoles.NormalizeAll(request.Roles ?? []);
     if (roles.Length == 0 || roles.Any(x => !IdentityRoles.All.Contains(x))) return Results.ValidationProblem(new Dictionary<string, string[]> { ["roles"] = ["Provide one or more supported roles."] });
     if (admin.Id == id && !roles.Contains("OperationsAdmin")) return Results.Conflict(new { message = "An administrator cannot remove their own OperationsAdmin role." });
     await using var cmd = db.CreateCommand("UPDATE users SET roles=$2 WHERE id=$1 AND active=true"); cmd.Parameters.AddWithValue(id); cmd.Parameters.AddWithValue(roles);
@@ -81,14 +81,15 @@ app.MapPut("/admin/users/{id:guid}/roles", async (Guid id, RoleUpdateRequest req
 app.Run();
 
 record LoginRequest(string Email, string Password);
-record RegisterRequest(string Email, string DisplayName, string Password);
+record RegisterRequest(string Email, string DisplayName, string Password, string? FullName = null, string? IdNumber = null, string? ContactNumber = null, string? District = null, string? Address = null);
 record AdminUserRequest(string Email, string DisplayName, string Password, string[] Roles)
 {
     public static Dictionary<string, string[]> Validate(AdminUserRequest x)
     {
         var errors = new Dictionary<string, string[]>();
         if (string.IsNullOrWhiteSpace(x.Email) || string.IsNullOrWhiteSpace(x.DisplayName) || string.IsNullOrWhiteSpace(x.Password) || x.Password.Length < 8) errors["user"] = ["Name, email and a password of at least 8 characters are required."];
-        if (x.Roles is null || x.Roles.Length == 0 || x.Roles.Any(role => !IdentityRoles.All.Contains(role))) errors["roles"] = ["Provide one or more supported roles."];
+        var normalized = IdentityRoles.NormalizeAll(x.Roles ?? []);
+        if (normalized.Length == 0 || normalized.Any(role => !IdentityRoles.All.Contains(role))) errors["roles"] = ["Provide one or more supported roles."];
         return errors;
     }
 }
@@ -100,21 +101,57 @@ static class Database
 {
     public static async Task InitializeAsync(NpgsqlDataSource db, bool seedDemoData)
     {
+        // Ensure new profile columns exist (idempotent — safe on every startup)
+        await using (var ensureCols = db.CreateCommand("ALTER TABLE IF EXISTS identity.users ADD COLUMN IF NOT EXISTS full_name text NULL; ALTER TABLE IF EXISTS identity.users ADD COLUMN IF NOT EXISTS id_number text NULL; ALTER TABLE IF EXISTS identity.users ADD COLUMN IF NOT EXISTS contact_number text NULL; ALTER TABLE IF EXISTS identity.users ADD COLUMN IF NOT EXISTS district text NULL; ALTER TABLE IF EXISTS identity.users ADD COLUMN IF NOT EXISTS address text NULL;")) { try { await ensureCols.ExecuteNonQueryAsync(); } catch { /* table may not exist yet on first run — baseline migration will create it */ } }
         await using (var history = db.CreateCommand("CREATE SCHEMA IF NOT EXISTS identity; CREATE TABLE IF NOT EXISTS identity.schema_migrations(version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());")) await history.ExecuteNonQueryAsync();
         await using var conn = await db.OpenConnectionAsync();
         await using var tx = await conn.BeginTransactionAsync();
-        await using var claim = new NpgsqlCommand("INSERT INTO identity.schema_migrations(version) VALUES('001_baseline') ON CONFLICT DO NOTHING RETURNING version", conn, tx);
-        if (await claim.ExecuteScalarAsync() is null) { await tx.CommitAsync(); return; }
-        var sql = await MigrationSql.BaselineAsync();
-        await using var cmd = new NpgsqlCommand(sql, conn, tx);
-        await cmd.ExecuteNonQueryAsync();
-        if (seedDemoData) foreach (var user in new[] { new User(Guid.Parse("11111111-1111-1111-1111-111111111111"), "admin@marketflow.local", "Marketflow Admin", ["OperationsAdmin", "CatalogStaff", "InventoryStaff"]), new User(Guid.Parse("22222222-2222-2222-2222-222222222222"), "customer@marketflow.local", "Demo Customer", ["Customer"]) }) { await using var seed = new NpgsqlCommand("INSERT INTO identity.users(id,email,display_name,password_hash,roles) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(email) DO NOTHING", conn, tx); seed.Parameters.AddWithValue(user.Id); seed.Parameters.AddWithValue(user.Email); seed.Parameters.AddWithValue(user.DisplayName); seed.Parameters.AddWithValue(Password.Hash("ChangeMe!123")); seed.Parameters.AddWithValue(user.Roles); await seed.ExecuteNonQueryAsync(); }
+
+        // 001_baseline
+        await using (var claim = new NpgsqlCommand("INSERT INTO identity.schema_migrations(version) VALUES('001_baseline') ON CONFLICT DO NOTHING RETURNING version", conn, tx))
+        {
+            if (await claim.ExecuteScalarAsync() is not null)
+            {
+                var sql = await MigrationSql.BaselineAsync();
+                await using var cmd = new NpgsqlCommand(sql, conn, tx);
+                await cmd.ExecuteNonQueryAsync();
+                if (seedDemoData) foreach (var user in new[] {
+                    new User(Guid.Parse("11111111-1111-1111-1111-111111111111"), "admin@marketflow.local", "Marketflow Admin", ["OperationsAdmin", "Staff"]),
+                    new User(Guid.Parse("22222222-2222-2222-2222-222222222222"), "customer@marketflow.local", "Demo Customer", ["Customer"]),
+                    new User(Guid.Parse("33333333-3333-3333-3333-333333333333"), "staff@marketflow.local", "Sam Staff", ["Staff"]),
+                    new User(Guid.Parse("44444444-4444-4444-4444-444444444444"), "driver@marketflow.local", "Dave Driver", ["Courier", "Dispatcher"])
+                }) { await using var seed = new NpgsqlCommand("INSERT INTO identity.users(id,email,display_name,password_hash,roles) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(email) DO NOTHING", conn, tx); seed.Parameters.AddWithValue(user.Id); seed.Parameters.AddWithValue(user.Email); seed.Parameters.AddWithValue(user.DisplayName); seed.Parameters.AddWithValue(Password.Hash("ChangeMe!123")); seed.Parameters.AddWithValue(user.Roles); await seed.ExecuteNonQueryAsync(); }
+            }
+        }
+
+        // 002_unify_staff_roles
+        await using (var claim2 = new NpgsqlCommand("INSERT INTO identity.schema_migrations(version) VALUES('002_unify_staff_roles') ON CONFLICT DO NOTHING RETURNING version", conn, tx))
+        {
+            if (await claim2.ExecuteScalarAsync() is not null)
+            {
+                var sql2 = await MigrationSql.UnifyStaffRolesAsync();
+                await using var cmd2 = new NpgsqlCommand(sql2, conn, tx);
+                await cmd2.ExecuteNonQueryAsync();
+            }
+        }
+
+        // Safe idempotent update to unify any remaining CatalogStaff/InventoryStaff roles
+        await using (var migrateCmd = new NpgsqlCommand("UPDATE identity.users SET roles = ARRAY(SELECT DISTINCT CASE WHEN r IN ('CatalogStaff', 'InventoryStaff') THEN 'Staff' ELSE r END FROM unnest(roles) AS r) WHERE 'CatalogStaff' = ANY(roles) OR 'InventoryStaff' = ANY(roles);", conn, tx))
+        {
+            await migrateCmd.ExecuteNonQueryAsync();
+        }
+
         await tx.CommitAsync();
     }
 }
 sealed class TokenService(IConfiguration config) { private readonly byte[] _key = Encoding.UTF8.GetBytes(config["Auth:SigningKey"] is { Length: >= 32 } key ? key : throw new InvalidOperationException("Auth:SigningKey must be supplied through configuration and contain at least 32 characters.")); public string Create(User u) { var p = ToUrl(Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { sub = u.Id, exp = DateTimeOffset.UtcNow.AddHours(8).ToUnixTimeSeconds() })))); return $"{p}.{ToUrl(Convert.ToBase64String(HMACSHA256.HashData(_key,Encoding.UTF8.GetBytes(p))))}"; } public bool TryRead(string token,out TokenPayload payload) { payload=default!; var x=token.Split('.'); if(x.Length!=2)return false; try { var actual=Convert.FromBase64String(FromUrl(x[1])); var expected=HMACSHA256.HashData(_key,Encoding.UTF8.GetBytes(x[0])); if(!CryptographicOperations.FixedTimeEquals(actual,expected))return false; var d=JsonDocument.Parse(Convert.FromBase64String(FromUrl(x[0]))).RootElement; var p=new TokenPayload(d.GetProperty("sub").GetGuid(),DateTimeOffset.FromUnixTimeSeconds(d.GetProperty("exp").GetInt64())); if(p.ExpiresAt<=DateTimeOffset.UtcNow)return false; payload=p; return true; } catch { return false; } } static string ToUrl(string s)=>s.TrimEnd('=').Replace('+','-').Replace('/','_'); static string FromUrl(string s)=>s.Replace('-','+').Replace('_','/')+new string('=',(4-s.Length%4)%4); public static string? GetBearer(HttpRequest r)=>r.Headers.Authorization.FirstOrDefault()?.Split(' ',2) is ["Bearer",var t]?t:null; public static string Hash(string t)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(t))); }
 static class Password { public static string Hash(string p) { var s=RandomNumberGenerator.GetBytes(16); var h=Rfc2898DeriveBytes.Pbkdf2(p,s,210000,HashAlgorithmName.SHA512,32); return $"{Convert.ToBase64String(s)}:{Convert.ToBase64String(h)}"; } public static bool Verify(string p,string stored) { var a=stored.Split(':'); if(a.Length!=2)return false; return CryptographicOperations.FixedTimeEquals(Rfc2898DeriveBytes.Pbkdf2(p,Convert.FromBase64String(a[0]),210000,HashAlgorithmName.SHA512,32),Convert.FromBase64String(a[1])); } }
-static class IdentityRoles { public static readonly HashSet<string> All = ["Customer", "CatalogStaff", "InventoryStaff", "OperationsAdmin", "Dispatcher", "Courier"]; }
+static class IdentityRoles
+{
+    public static readonly HashSet<string> All = ["Customer", "Staff", "OperationsAdmin", "Dispatcher", "Courier"];
+    public static string Normalize(string r) => r switch { "CatalogStaff" or "InventoryStaff" => "Staff", _ => r };
+    public static string[] NormalizeAll(IEnumerable<string> roles) => roles.Select(Normalize).Distinct(StringComparer.Ordinal).ToArray();
+}
 static class IdentityAuth
 {
     public static async Task<bool> IsAdmin(HttpRequest request, NpgsqlDataSource db, TokenService tokens) => (await Principal(request, db, tokens))?.Roles.Contains("OperationsAdmin") == true;
@@ -126,7 +163,11 @@ static class IdentityAuth
     }
 }
 sealed class RequestMetrics { long _requests; long _errors; long _durationTicks; public void Record(int status, TimeSpan duration) { Interlocked.Increment(ref _requests); if (status >= 500) Interlocked.Increment(ref _errors); Interlocked.Add(ref _durationTicks, duration.Ticks); } public string AsPrometheus(string service) => $"# TYPE marketflow_http_requests_total counter\nmarketflow_http_requests_total{{service=\"{service}\"}} {_requests}\n# TYPE marketflow_http_errors_total counter\nmarketflow_http_errors_total{{service=\"{service}\"}} {_errors}\n# TYPE marketflow_http_request_duration_seconds summary\nmarketflow_http_request_duration_seconds_sum{{service=\"{service}\"}} {TimeSpan.FromTicks(_durationTicks).TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)}\nmarketflow_http_request_duration_seconds_count{{service=\"{service}\"}} {_requests}\n"; }
-static class MigrationSql { public static Task<string> BaselineAsync() => File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Migrations", "001_baseline.sql")); }
+static class MigrationSql
+{
+    public static Task<string> BaselineAsync() => File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Migrations", "001_baseline.sql"));
+    public static Task<string> UnifyStaffRolesAsync() => File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Migrations", "002_unify_staff_roles.sql"));
+}
 static class OpenApi
 {
     public record Route(string Method, string Path, string Summary);

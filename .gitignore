@@ -10,3 +10,6 @@ TestResults/
 .env
 .env.*
 !.env.example
+
+# Local override files (may reference secrets via env vars)
+docker-compose.override.yml
