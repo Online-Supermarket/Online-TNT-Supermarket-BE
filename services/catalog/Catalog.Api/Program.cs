@@ -361,6 +361,7 @@ static class CatalogDb
     {
         await using (var history = db.CreateCommand("CREATE SCHEMA IF NOT EXISTS catalog; CREATE TABLE IF NOT EXISTS catalog.schema_migrations(version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());")) await history.ExecuteNonQueryAsync();
         await using (var ensureCols = db.CreateCommand("ALTER TABLE catalog.categories ADD COLUMN IF NOT EXISTS description text NULL; ALTER TABLE catalog.categories ADD COLUMN IF NOT EXISTS image_url text NULL; ALTER TABLE catalog.products ADD COLUMN IF NOT EXISTS image_url text NULL; ALTER TABLE catalog.products ADD COLUMN IF NOT EXISTS reorder_level integer NOT NULL DEFAULT 10; ALTER TABLE catalog.products ADD COLUMN IF NOT EXISTS target_stock_level integer NOT NULL DEFAULT 50; ALTER TABLE catalog.products ADD COLUMN IF NOT EXISTS last_restocked_at timestamptz NULL;")) { try { await ensureCols.ExecuteNonQueryAsync(); } catch { /* columns may already exist */ } }
+        await using (var ensureCascade = db.CreateCommand("DO $$ BEGIN ALTER TABLE catalog.replenishment_plans DROP CONSTRAINT IF EXISTS replenishment_plans_product_id_fkey; ALTER TABLE catalog.replenishment_plans ADD CONSTRAINT replenishment_plans_product_id_fkey FOREIGN KEY (product_id) REFERENCES catalog.products(id) ON DELETE CASCADE; ALTER TABLE catalog.stock_reservation_items DROP CONSTRAINT IF EXISTS stock_reservation_items_product_id_fkey; ALTER TABLE catalog.stock_reservation_items ADD CONSTRAINT stock_reservation_items_product_id_fkey FOREIGN KEY (product_id) REFERENCES catalog.products(id) ON DELETE CASCADE; EXCEPTION WHEN OTHERS THEN NULL; END $$;")) { try { await ensureCascade.ExecuteNonQueryAsync(); } catch { /* ignore */ } }
 
         // Migration 001_baseline
         await using (var conn = await db.OpenConnectionAsync())
@@ -473,8 +474,12 @@ static class CatalogDb
     public static async Task<bool> DeleteProduct(NpgsqlDataSource db, Guid id)
     {
         await using var conn = await db.OpenConnectionAsync();
-        // Also clean up related audit_log and stock_movements rows so FK constraints don't block
+        // Also clean up related replenishment_plans, stock_reservation_items, audit_log and stock_movements rows so FK constraints don't block
         await using var tx = await conn.BeginTransactionAsync();
+        await using var del0a = new NpgsqlCommand("DELETE FROM catalog.replenishment_plans WHERE product_id = $1", conn, tx);
+        del0a.Parameters.AddWithValue(id); await del0a.ExecuteNonQueryAsync();
+        await using var del0b = new NpgsqlCommand("DELETE FROM catalog.stock_reservation_items WHERE product_id = $1", conn, tx);
+        del0b.Parameters.AddWithValue(id); await del0b.ExecuteNonQueryAsync();
         await using var del1 = new NpgsqlCommand("DELETE FROM catalog.audit_log WHERE product_id = $1", conn, tx);
         del1.Parameters.AddWithValue(id); await del1.ExecuteNonQueryAsync();
         await using var del2 = new NpgsqlCommand("DELETE FROM catalog.stock_movements WHERE product_id = $1", conn, tx);

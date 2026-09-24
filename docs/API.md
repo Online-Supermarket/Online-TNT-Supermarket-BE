@@ -9,7 +9,7 @@ All bodies use JSON. Browser requests use the gateway paths `http://localhost:80
 | Identity | `POST /auth/logout` | Authenticated | Revokes the current token; returns 204. |
 | Identity | `GET /auth/introspect` | Internal bearer request | Returns `active`, identity and roles. |
 | Identity | `GET /users/me` | Authenticated | Returns active user identity and roles. |
-| Identity | `GET /admin/users`, `POST /admin/users`, `PUT /admin/users/{id}/roles` | Operations Admin | Lists staff/customer accounts, creates staff/courier accounts, and changes roles. Public registration always creates Customer only. |
+| Identity | `GET /admin/users?role=Rider`, `GET/PUT /admin/users/{id}`, `POST /admin/users` | Operations Admin | Lists and manages accounts. Rider responses include personal, availability, and vehicle details. A rider update atomically upserts `identity.rider_profiles`; duplicate vehicle/license numbers return 409. Public registration always creates Customer only. |
 | Catalog | `GET /categories` | Public | Active catalog categories. |
 | Catalog | `GET /products?q=&categoryId=&page=&pageSize=` | Public | Active products only. Search matches SKU or name case-insensitively. Page size is 1–100. |
 | Catalog | `GET /products/{id}` | Public | Active product detail; inactive/missing products return 404. |

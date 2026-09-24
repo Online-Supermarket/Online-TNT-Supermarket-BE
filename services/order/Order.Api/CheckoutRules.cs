@@ -11,7 +11,7 @@ public static class CheckoutRules
     {
         if (subtotal < 0) throw new ArgumentOutOfRangeException(nameof(subtotal));
         var tax = decimal.Round(subtotal * .10m, 2, MidpointRounding.AwayFromZero);
-        var deliveryFee = subtotal == 0 ? 0 : 5m;
+        var deliveryFee = subtotal == 0 ? 0 : 300m;
         return new CheckoutTotals(subtotal, tax, deliveryFee, subtotal + tax + deliveryFee);
     }
 
