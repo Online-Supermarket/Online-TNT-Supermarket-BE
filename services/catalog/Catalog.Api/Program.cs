@@ -26,7 +26,7 @@ app.MapGet("/categories", CatalogDb.Categories);
 app.MapGet("/categories/{id:guid}", CatalogDb.Category);
 app.MapPost("/categories", async (CategoryInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     var errors = CategoryInput.Validate(input); if (errors.Count > 0) return Results.ValidationProblem(errors);
     try
     {
@@ -40,7 +40,7 @@ app.MapPost("/categories", async (CategoryInput input, HttpRequest req, Identity
 });
 app.MapPut("/categories/{id:guid}", async (Guid id, CategoryInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     var errors = CategoryInput.Validate(input); if (errors.Count > 0) return Results.ValidationProblem(errors);
     try
     {
@@ -54,7 +54,7 @@ app.MapPut("/categories/{id:guid}", async (Guid id, CategoryInput input, HttpReq
 });
 app.MapDelete("/categories/{id:guid}", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     try
     {
         return await CatalogDb.DeleteCategory(db, id) ? Results.NoContent() : Results.NotFound();
@@ -66,37 +66,37 @@ app.MapDelete("/categories/{id:guid}", async (Guid id, HttpRequest req, Identity
 });
 app.MapGet("/products", CatalogDb.Products);
 app.MapGet("/products/{id:guid}", CatalogDb.Product);
-app.MapGet("/staff/products", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => !await auth.Allowed(req, "Staff", "OperationsAdmin") ? Results.StatusCode(403) : Results.Ok(await CatalogDb.ReadProducts(db, true)));
+app.MapGet("/staff/products", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => !await auth.Allowed(req, "Staff", "Admin") ? Results.StatusCode(403) : Results.Ok(await CatalogDb.ReadProducts(db, true)));
 app.MapPost("/products", async (ProductInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     var errors = ProductInput.Validate(input); if (errors.Count > 0) return Results.ValidationProblem(errors);
     try { var id = await CatalogDb.UpsertProduct(db, null, input, actor.Subject, CorrelationId.From(req)); return Results.Created($"/products/{id}", new { id }); }
     catch (PostgresException e) when (e.SqlState == "23505") { return Results.Conflict(new { message = "SKU already exists." }); }
 });
 app.MapPut("/products/{id:guid}", async (Guid id, ProductInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     var errors = ProductInput.Validate(input); if (errors.Count > 0) return Results.ValidationProblem(errors);
     try { return await CatalogDb.UpsertProduct(db, id, input, actor.Subject, CorrelationId.From(req)) == Guid.Empty ? Results.NotFound() : Results.NoContent(); }
     catch (PostgresException e) when (e.SqlState == "23505") { return Results.Conflict(new { message = "SKU already exists." }); }
 });
 app.MapMethods("/products/{id:guid}/deactivate", ["PATCH"], async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     return await CatalogDb.Deactivate(db, id, actor.Subject, CorrelationId.From(req)) ? Results.NoContent() : Results.NotFound();
 });
 app.MapDelete("/products/{id:guid}", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    // Only OperationsAdmin may permanently delete a product from the database.
-    var actor = await auth.Principal(req, "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    // Only Admin may permanently delete a product from the database.
+    var actor = await auth.Principal(req, "Admin"); if (actor is null) return Results.StatusCode(403);
     return await CatalogDb.DeleteProduct(db, id) ? Results.NoContent() : Results.NotFound();
 });
 app.MapGet("/reports/inventory", async (Guid? categoryId, int? threshold, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
-    !await auth.Allowed(req, "Staff", "OperationsAdmin") ? Results.StatusCode(403) : Results.Ok(await CatalogDb.Inventory(db, categoryId, threshold ?? 5)));
+    !await auth.Allowed(req, "Staff", "Admin") ? Results.StatusCode(403) : Results.Ok(await CatalogDb.Inventory(db, categoryId, threshold ?? 5)));
 app.MapGet("/reports/inventory/export", async (Guid? categoryId, int? threshold, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    if (!await auth.Allowed(req, "Staff", "OperationsAdmin")) return Results.StatusCode(403);
+    if (!await auth.Allowed(req, "Staff", "Admin")) return Results.StatusCode(403);
     var report = await CatalogDb.Inventory(db, categoryId, threshold ?? 5); var csv = new StringBuilder("SKU,Name,Category,Price,Stock Quantity,Low Stock,Active\n");
     foreach (var row in report.Products) csv.Append(Csv.Escape(row.Sku)).Append(',').Append(Csv.Escape(row.Name)).Append(',').Append(Csv.Escape(row.CategoryName)).Append(',').Append(row.Price.ToString("0.00", CultureInfo.InvariantCulture)).Append(',').Append(row.StockQuantity).Append(',').Append(row.LowStock).Append(',').Append(row.Active).Append('\n');
     return Results.File(Encoding.UTF8.GetBytes(csv.ToString()), "text/csv", "inventory-report.csv");
@@ -113,22 +113,22 @@ app.MapPost("/internal/stock-reservations/{orderId:guid}/release", async (Guid o
 // ── Inventory Replenishment ───────────────────────────────────────────────────
 app.MapGet("/inventory/low-stock", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     return Results.Ok(await CatalogDb.LowStock(db));
 });
 app.MapGet("/inventory/replenishment", async (string? status, Guid? productId, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     return Results.Ok(await CatalogDb.ReplenishmentPlans(db, status, productId));
 });
 app.MapGet("/inventory/replenishment/{id:guid}", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     var plan = await CatalogDb.ReplenishmentPlan(db, id); return plan is null ? Results.NotFound() : Results.Ok(plan);
 });
 app.MapPost("/inventory/replenishment", async (ReplenishmentInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     if (input.ProductId == Guid.Empty) return Results.ValidationProblem(new Dictionary<string, string[]> { ["productId"] = ["ProductId is required."] });
     if (input.RequestedQuantity <= 0) return Results.ValidationProblem(new Dictionary<string, string[]> { ["requestedQuantity"] = ["RequestedQuantity must be greater than 0."] });
     var plan = await CatalogDb.CreateReplenishmentPlan(db, input, actor.Subject);
@@ -136,22 +136,22 @@ app.MapPost("/inventory/replenishment", async (ReplenishmentInput input, HttpReq
 });
 app.MapMethods("/inventory/replenishment/{id:guid}/approve", ["PATCH"], async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     return await CatalogDb.TransitionPlan(db, id, "Pending", "Approved", actor.Subject) switch { "ok" => Results.NoContent(), "notfound" => Results.NotFound(), _ => Results.Conflict(new { message = "Plan must be Pending to approve." }) };
 });
 app.MapMethods("/inventory/replenishment/{id:guid}/ordered", ["PATCH"], async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     return await CatalogDb.TransitionPlan(db, id, "Approved", "Ordered", actor.Subject) switch { "ok" => Results.NoContent(), "notfound" => Results.NotFound(), _ => Results.Conflict(new { message = "Plan must be Approved to mark as Ordered." }) };
 });
 app.MapMethods("/inventory/replenishment/{id:guid}/cancel", ["PATCH"], async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     return await CatalogDb.CancelPlan(db, id, actor.Subject) switch { "ok" => Results.NoContent(), "notfound" => Results.NotFound(), _ => Results.Conflict(new { message = "Only Pending or Approved plans can be cancelled." }) };
 });
 app.MapMethods("/inventory/replenishment/{id:guid}/receive", ["PATCH"], async (Guid id, ReceiveStockInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin"); if (actor is null) return Results.StatusCode(403);
+    var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     if (input.ReceivedQuantity <= 0) return Results.ValidationProblem(new Dictionary<string, string[]> { ["receivedQuantity"] = ["ReceivedQuantity must be greater than 0."] });
     var result = await CatalogDb.ReceiveStock(db, id, input, actor.Subject, CorrelationId.From(req));
     return result switch { "ok" => Results.NoContent(), "notfound" => Results.NotFound(), "already_received" => Results.Conflict(new { message = "Stock for this plan has already been received." }), _ => Results.Conflict(new { message = "Plan must be in Approved or Ordered status to receive stock." }) };
@@ -160,21 +160,21 @@ app.MapMethods("/inventory/replenishment/{id:guid}/receive", ["PATCH"], async (G
 // ── Inventory Stock Management ────────────────────────────────────────────────
 app.MapGet("/inventory", async (string? search, Guid? categoryId, string? status, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin");
+    var actor = await auth.Principal(req, "Staff", "Admin");
     if (actor is null) return Results.StatusCode(403);
     return Results.Ok(await CatalogDb.AllInventory(db, search, categoryId, status));
 });
 
 app.MapGet("/inventory/summary", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin");
+    var actor = await auth.Principal(req, "Staff", "Admin");
     if (actor is null) return Results.StatusCode(403);
     return Results.Ok(await CatalogDb.InventorySummary(db));
 });
 
 app.MapGet("/inventory/{id:guid}", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin");
+    var actor = await auth.Principal(req, "Staff", "Admin");
     if (actor is null) return Results.StatusCode(403);
     var item = await CatalogDb.ProductInventory(db, id);
     return item is null ? Results.NotFound() : Results.Ok(item);
@@ -182,7 +182,7 @@ app.MapGet("/inventory/{id:guid}", async (Guid id, HttpRequest req, IdentityClie
 
 app.MapPost("/inventory/{id:guid}/add", async (Guid id, AddStockInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin");
+    var actor = await auth.Principal(req, "Staff", "Admin");
     if (actor is null) return Results.StatusCode(403);
     if (input.Quantity <= 0)
         return Results.ValidationProblem(new Dictionary<string, string[]> { ["quantity"] = ["Quantity must be greater than 0."] });
@@ -197,7 +197,7 @@ app.MapPost("/inventory/{id:guid}/add", async (Guid id, AddStockInput input, Htt
 
 app.MapPost("/inventory/{id:guid}/remove", async (Guid id, RemoveStockInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin");
+    var actor = await auth.Principal(req, "Staff", "Admin");
     if (actor is null) return Results.StatusCode(403);
     if (input.Quantity <= 0)
         return Results.ValidationProblem(new Dictionary<string, string[]> { ["quantity"] = ["Quantity must be greater than 0."] });
@@ -213,7 +213,7 @@ app.MapPost("/inventory/{id:guid}/remove", async (Guid id, RemoveStockInput inpu
 
 app.MapPut("/inventory/{id:guid}/adjust", async (Guid id, AdjustStockInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin");
+    var actor = await auth.Principal(req, "Staff", "Admin");
     if (actor is null) return Results.StatusCode(403);
     var errors = new Dictionary<string, string[]>();
     if (input.NewQuantity < 0)
@@ -235,7 +235,7 @@ app.MapPut("/inventory/{id:guid}/adjust", async (Guid id, AdjustStockInput input
 
 app.MapGet("/inventory/history", async (Guid? productId, string? adjustmentType, int? limit, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
-    var actor = await auth.Principal(req, "Staff", "OperationsAdmin");
+    var actor = await auth.Principal(req, "Staff", "Admin");
     if (actor is null) return Results.StatusCode(403);
     return Results.Ok(await CatalogDb.StockHistory(db, productId, adjustmentType, limit ?? 100));
 });

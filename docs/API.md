@@ -1,6 +1,8 @@
 # Sprint 1 and 2 API contract
 
-All bodies use JSON. Browser requests use the gateway paths `http://localhost:8080/api/{identity|catalog|order}` in the local Compose environment. Protected requests need `Authorization: Bearer <accessToken>`. Catalog and Order call Identity introspection before authorizing a protected request; a revoked, expired, malformed or insufficient-role token is denied.
+All bodies use JSON. Browser requests use the gateway paths `http://localhost:8080/api/{identity|catalog|order|reporting}` in the local Compose environment. Protected requests need `Authorization: Bearer <accessToken>`. Catalog, Order and Reporting call Identity introspection before authorizing a protected request; a revoked, expired, malformed or insufficient-role token is denied.
+
+Access tokens are HS256 JWTs whose `role` claim contains the normalized roles used by authorization. `OperationsAdmin` has admin and staff access; `Staff` has operational access. Legacy `CatalogStaff` and `InventoryStaff` values are normalized to `Staff` for old records/tokens. After a role migration or role change, users should log out and log in again to receive a JWT with the current `role` claim.
 
 | Service | Operation | Access | Result |
 | --- | --- | --- | --- |

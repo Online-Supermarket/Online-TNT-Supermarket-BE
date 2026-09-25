@@ -10,9 +10,10 @@ public static class CheckoutRules
     public static CheckoutTotals Calculate(decimal subtotal)
     {
         if (subtotal < 0) throw new ArgumentOutOfRangeException(nameof(subtotal));
-        var tax = decimal.Round(subtotal * .10m, 2, MidpointRounding.AwayFromZero);
-        var deliveryFee = subtotal == 0 ? 0 : 300m;
-        return new CheckoutTotals(subtotal, tax, deliveryFee, subtotal + tax + deliveryFee);
+        // TNT does not charge customer tax. Keep the field for backwards-compatible DTOs.
+        const decimal tax = 0m;
+        var deliveryFee = subtotal == 0 ? 0 : 450m;
+        return new CheckoutTotals(subtotal, tax, deliveryFee, subtotal + deliveryFee);
     }
 
     public static string IntentHash(Guid addressId, IEnumerable<CheckoutLine> lines, string currency, decimal tax, decimal deliveryFee)
