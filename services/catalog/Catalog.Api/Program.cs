@@ -338,7 +338,7 @@ record ReleaseRequest(Guid CorrelationId);
 record ReservationResult(Guid OrderId, Guid? ReservationId, string State, List<object> Lines);
 record InventoryRow(string Sku, string Name, string CategoryName, decimal Price, int StockQuantity, bool LowStock, bool Active);
 record InventoryReport(int TotalProducts, int LowStockCount, int ZeroStockCount, DateTimeOffset GeneratedAt, List<InventoryRow> Products);
-record ProductSnapshot(Guid Id, string Sku, string Name, decimal Price, int StockQuantity, bool Active, Guid CategoryId, string? ImageUrl = null);
+record ProductSnapshot(Guid Id, string Sku, string Name, decimal Price, int StockQuantity, bool Active, Guid CategoryId, string? ImageUrl = null, string CategoryName = "Unassigned");
 
 static class CorrelationId { public static Guid From(HttpRequest request) => Guid.TryParse(request.Headers["X-Correlation-Id"].FirstOrDefault(), out var id) ? id : Guid.NewGuid(); }
 static class InternalAuth { public static bool Valid(HttpRequest request, IConfiguration config) => config["Internal:Key"] is { Length: > 0 } key && request.Headers["X-Internal-Key"].FirstOrDefault() == key; }
@@ -521,7 +521,7 @@ static class CatalogDb
         await using var conn = await db.OpenConnectionAsync(); await using var tx = await conn.BeginTransactionAsync(); await using var write = new NpgsqlCommand("UPDATE catalog.products SET active=false,updated_by=$2,updated_at=now() WHERE id=$1 AND active=true", conn, tx); write.Parameters.AddWithValue(id); write.Parameters.AddWithValue(actor); if (await write.ExecuteNonQueryAsync() == 0) return false;
         await AuditAndOutbox(conn, tx, (await Snapshot(conn, tx, id))!, "ProductChanged", actor, correlation); await tx.CommitAsync(); return true;
     }
-    static async Task<ProductSnapshot?> Snapshot(NpgsqlConnection conn, NpgsqlTransaction tx, Guid id) { await using var cmd = new NpgsqlCommand("SELECT id,sku,name,price,stock_quantity,active,category_id,image_url FROM catalog.products WHERE id=$1", conn, tx); cmd.Parameters.AddWithValue(id); await using var reader = await cmd.ExecuteReaderAsync(); return await reader.ReadAsync() ? new ProductSnapshot(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetDecimal(3), reader.GetInt32(4), reader.GetBoolean(5), reader.GetGuid(6), reader.IsDBNull(7) ? null : reader.GetString(7)) : null; }
+    static async Task<ProductSnapshot?> Snapshot(NpgsqlConnection conn, NpgsqlTransaction tx, Guid id) { await using var cmd = new NpgsqlCommand("SELECT p.id,p.sku,p.name,p.price,p.stock_quantity,p.active,p.category_id,p.image_url,c.name FROM catalog.products p JOIN catalog.categories c ON c.id=p.category_id WHERE p.id=$1", conn, tx); cmd.Parameters.AddWithValue(id); await using var reader = await cmd.ExecuteReaderAsync(); return await reader.ReadAsync() ? new ProductSnapshot(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), reader.GetDecimal(3), reader.GetInt32(4), reader.GetBoolean(5), reader.GetGuid(6), reader.IsDBNull(7) ? null : reader.GetString(7), reader.GetString(8)) : null; }
     static async Task AuditAndOutbox(NpgsqlConnection conn, NpgsqlTransaction tx, ProductSnapshot product, string type, Guid actor, Guid correlation)
     {
         var eventId = Guid.NewGuid();
@@ -539,6 +539,7 @@ static class CatalogDb
             stockQuantity = product.StockQuantity,
             active = product.Active,
             categoryId = product.CategoryId,
+            categoryName = product.CategoryName,
             imageUrl = product.ImageUrl
         });
 

@@ -47,7 +47,7 @@ app.MapDelete("/addresses/{id:guid}", async (Guid id, HttpRequest req, IdentityC
 app.MapGet("/basket", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var user = await auth.Customer(req); return user is null ? Results.Unauthorized() : Results.Ok(await OrderDb.Basket(db, user.Subject, catalog)); });
 app.MapPut("/basket/items/{productId:guid}", async (Guid productId, BasketLineInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var user = await auth.Customer(req); if (user is null) return Results.Unauthorized(); if (input.Quantity <= 0) return Results.ValidationProblem(new Dictionary<string, string[]> { ["quantity"] = ["Quantity must be positive."] }); var product = await catalog.Product(productId); if (product is null || !product.Active) return Results.BadRequest(new { message = "Product is not available." }); if (input.Quantity > product.StockQuantity) return Results.Conflict(new { message = $"Only {product.StockQuantity} items are available in stock." }); await OrderDb.SetBasketLine(db, user.Subject, productId, input.Quantity); return Results.Ok(await OrderDb.Basket(db, user.Subject, catalog)); });
 app.MapDelete("/basket/items/{productId:guid}", async (Guid productId, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var user = await auth.Customer(req); if (user is null) return Results.Unauthorized(); await OrderDb.RemoveBasketLine(db, user.Subject, productId); return Results.Ok(await OrderDb.Basket(db, user.Subject, catalog)); });
-app.MapPost("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog, ReceiptStorageConfig storageConfig) =>
+app.MapPost("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog, ReceiptStorageConfig storageConfig, ILogger<Program> log) =>
 {
     var user = await auth.Customer(req); if (user is null) return Results.Unauthorized();
     var key = req.Headers["Idempotency-Key"].FirstOrDefault(); if (string.IsNullOrWhiteSpace(key) || key.Length > 160) return Results.ValidationProblem(new Dictionary<string, string[]> { ["Idempotency-Key"] = ["A non-empty idempotency key of at most 160 characters is required."] });
@@ -55,6 +55,9 @@ app.MapPost("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSo
     Guid addressId = Guid.Empty;
     string paymentMethod = "CashOnDelivery";
     IFormFile? receiptFile = null;
+    byte[]? receiptBytes = null;
+    string? jsonReceiptName = null;
+    string? jsonReceiptContentType = null;
 
     if (req.HasFormContentType)
     {
@@ -66,10 +69,10 @@ app.MapPost("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSo
     }
     else
     {
-        CheckoutInput? input = null;
+        CheckoutRequest? input = null;
         try
         {
-            input = await JsonSerializer.DeserializeAsync<CheckoutInput>(req.Body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            input = await JsonSerializer.DeserializeAsync<CheckoutRequest>(req.Body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         }
         catch
         {
@@ -79,6 +82,13 @@ app.MapPost("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSo
         if (input is null) return Results.BadRequest(new { message = "Invalid request body." });
         addressId = input.AddressId;
         paymentMethod = input.PaymentMethod ?? "CashOnDelivery";
+        jsonReceiptName = input.ReceiptName;
+        jsonReceiptContentType = input.ReceiptContentType;
+        if (!string.IsNullOrWhiteSpace(input.ReceiptBase64))
+        {
+            try { receiptBytes = Convert.FromBase64String(input.ReceiptBase64); }
+            catch { return Results.BadRequest(new { message = "Receipt content is not valid base64 data." }); }
+        }
     }
 
     if (paymentMethod != "CashOnDelivery" && paymentMethod != "BankTransfer")
@@ -88,32 +98,36 @@ app.MapPost("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSo
     string? receiptStorageKey = null; string? receiptOriginalName = null; string? receiptContentType = null; long receiptSize = 0;
     if (paymentMethod == "BankTransfer")
     {
-        if (receiptFile is null || receiptFile.Length == 0)
+        if ((receiptFile is null || receiptFile.Length == 0) && (receiptBytes is null || receiptBytes.Length == 0))
             return Results.BadRequest(new { message = "A payment receipt PDF is required for Bank Transfer." });
-        if (receiptFile.ContentType != "application/pdf" && !receiptFile.FileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+        var receiptName = receiptFile?.FileName ?? jsonReceiptName ?? "receipt.pdf";
+        var receiptType = receiptFile?.ContentType ?? jsonReceiptContentType ?? "application/pdf";
+        var receiptLength = receiptFile?.Length ?? receiptBytes!.LongLength;
+        if (receiptType != "application/pdf" && !receiptName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
             return Results.BadRequest(new { message = "Receipt must be a PDF file (application/pdf)." });
-        if (receiptFile.Length > 5 * 1024 * 1024)
+        if (receiptLength > 5 * 1024 * 1024)
             return Results.BadRequest(new { message = "Receipt PDF must not exceed 5 MB." });
 
         // Additional MIME validation: check PDF magic bytes
         using var peek = new MemoryStream();
-        await receiptFile.OpenReadStream().CopyToAsync(peek);
+        if (receiptBytes is not null) await peek.WriteAsync(receiptBytes);
+        else if (receiptFile is not null) await receiptFile.OpenReadStream().CopyToAsync(peek);
         peek.Position = 0;
         if (peek.Length < 4 || peek.ReadByte() != 0x25 || peek.ReadByte() != 0x50 || peek.ReadByte() != 0x44 || peek.ReadByte() != 0x46)
             return Results.BadRequest(new { message = "Uploaded file is not a valid PDF." });
         peek.Position = 0;
 
         receiptStorageKey = $"{Guid.NewGuid():N}.pdf";
-        receiptOriginalName = receiptFile.FileName;
-        receiptContentType = receiptFile.ContentType;
-        receiptSize = receiptFile.Length;
+        receiptOriginalName = receiptName;
+        receiptContentType = receiptType;
+        receiptSize = receiptLength;
 
         // Store receipt to disk
         var filePath = Path.Combine(storageConfig.BasePath, receiptStorageKey);
         try
         {
-            await using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write);
-            await peek.CopyToAsync(fs);
+            if (receiptBytes is not null) await File.WriteAllBytesAsync(filePath, receiptBytes);
+            else { await using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write); await peek.CopyToAsync(fs); }
         }
         catch
         {
@@ -123,27 +137,39 @@ app.MapPost("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSo
         }
     }
 
+    CheckoutResult? checkoutResult = null;
     try
     {
-        var result = await OrderDb.Checkout(db, user.Subject, key, new CheckoutInput(addressId, paymentMethod), catalog, CorrelationId.From(req));
-        if (result.Error is "Conflict") return Results.Conflict(result);
-        if (result.Status == "Rejected") return Results.UnprocessableEntity(result);
+        checkoutResult = await OrderDb.Checkout(db, user.Subject, key, new CheckoutInput(addressId, paymentMethod), catalog, CorrelationId.From(req));
+        if (checkoutResult.Error is "Conflict") return Results.Conflict(checkoutResult);
+        if (checkoutResult.Status == "Rejected") return Results.UnprocessableEntity(checkoutResult);
 
         // Create payment record
         var paymentStatus = paymentMethod == "BankTransfer" ? "PendingVerification" : "NotRequired";
-        await OrderDb.CreatePayment(db, result.OrderId, paymentMethod, paymentStatus,
+        await OrderDb.CreatePayment(db, checkoutResult.OrderId, paymentMethod, paymentStatus,
             receiptStorageKey, receiptOriginalName, receiptContentType, receiptSize);
 
-        return Results.Ok(result);
+        return Results.Ok(checkoutResult);
     }
-    catch
+    catch (Exception ex)
     {
         // Clean up stored receipt if order creation failed
         if (receiptStorageKey is not null)
         {
             try { File.Delete(Path.Combine(storageConfig.BasePath, receiptStorageKey)); } catch { }
         }
-        throw;
+        if (checkoutResult is not null && checkoutResult.OrderId != Guid.Empty)
+        {
+            try
+            {
+                await catalog.Release(checkoutResult.OrderId, CorrelationId.From(req));
+                await OrderDb.Finish(db, checkoutResult.OrderId, "Rejected", user.Subject, "Payment record creation failed", CorrelationId.From(req), false);
+            }
+            catch (Exception cleanupError) { log.LogError(cleanupError, "Checkout cleanup failed for order {OrderId}", checkoutResult.OrderId); }
+        }
+        log.LogError(ex, "Checkout failed for customer {CustomerId}, payment method {PaymentMethod}", user.Subject, paymentMethod);
+        var detail = app.Environment.IsDevelopment() ? ex.Message : "Order submission failed. Your cart was not cleared. Please retry.";
+        return Results.Problem(detail, statusCode: 500);
     }
 }).DisableAntiforgery();
 app.MapGet("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var user = await auth.Customer(req); return user is null ? Results.Unauthorized() : Results.Ok(await OrderDb.Orders(db, user.Subject)); });
@@ -154,7 +180,7 @@ app.MapGet("/bank-config", (BankConfig cfg) => Results.Ok(new { bankName = cfg.B
 app.MapGet("/orders/bank-config", (BankConfig cfg) => Results.Ok(new { bankName = cfg.BankName, accountName = cfg.AccountName, accountNumber = cfg.AccountNumber, branch = cfg.Branch }));
 app.MapGet("/order/bank-config", (BankConfig cfg) => Results.Ok(new { bankName = cfg.BankName, accountName = cfg.AccountName, accountNumber = cfg.AccountNumber, branch = cfg.Branch }));
 // Receipt access endpoint (protected)
-app.MapGet("/orders/{id:guid}/payment/receipt", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, ReceiptStorageConfig storageConfig) =>
+app.MapGet("/orders/{id:guid}/payment/receipt", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, ReceiptStorageConfig storageConfig, ILogger<Program> log) =>
 {
     // Allow customer (owner) or staff/admin
     var customer = await auth.Customer(req);
@@ -169,10 +195,19 @@ app.MapGet("/orders/{id:guid}/payment/receipt", async (Guid id, HttpRequest req,
     var payment = await OrderDb.GetPayment(db, id);
     if (payment is null || payment.ReceiptStorageKey is null) return Results.NotFound(new { message = "No receipt found for this order." });
 
-    var filePath = Path.Combine(storageConfig.BasePath, payment.ReceiptStorageKey);
-    if (!File.Exists(filePath)) return Results.NotFound(new { message = "Receipt file not found." });
-
-    return Results.File(filePath, payment.ReceiptContentType ?? "application/pdf", payment.ReceiptOriginalName ?? "receipt.pdf");
+    try
+    {
+        var filePath = Path.Combine(storageConfig.BasePath, Path.GetFileName(payment.ReceiptStorageKey));
+        if (!File.Exists(filePath)) return Results.NotFound(new { message = "Receipt file not found. Please upload the receipt again." });
+        var bytes = await File.ReadAllBytesAsync(filePath);
+        if (bytes.Length == 0) return Results.NotFound(new { message = "Receipt file is empty. Please upload the receipt again." });
+        return Results.File(bytes, payment.ReceiptContentType ?? "application/pdf", payment.ReceiptOriginalName ?? "receipt.pdf");
+    }
+    catch (Exception ex)
+    {
+        log.LogWarning(ex, "Unable to read payment receipt for order {OrderId}", id);
+        return Results.Problem("The payment receipt is temporarily unavailable.", statusCode: 503);
+    }
 });
 // Verify payment (staff/admin)
 app.MapPost("/staff/orders/{id:guid}/payment/verify", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
@@ -242,13 +277,13 @@ record AddressInput(string RecipientName, string Phone, string Line1, string? Li
 {
     public static Dictionary<string, string[]> Validate(AddressInput x) { var errors = new Dictionary<string, string[]>(); if (string.IsNullOrWhiteSpace(x.RecipientName) || string.IsNullOrWhiteSpace(x.Phone) || string.IsNullOrWhiteSpace(x.Line1) || string.IsNullOrWhiteSpace(x.City) || string.IsNullOrWhiteSpace(x.Zone)) errors["address"] = ["Recipient, phone, line 1, city and zone are required."]; return errors; }
 }
-record BasketLineInput(int Quantity); record CheckoutInput(Guid AddressId, string? PaymentMethod = null); record CancelInput(string Reason); record ReservationLine(Guid ProductId, int Quantity);
+record BasketLineInput(int Quantity); record CheckoutInput(Guid AddressId, string? PaymentMethod = null); record CheckoutRequest(Guid AddressId, string? PaymentMethod = null, string? ReceiptName = null, string? ReceiptContentType = null, string? ReceiptBase64 = null); record CancelInput(string Reason); record ReservationLine(Guid ProductId, int Quantity);
 record OrderActionInput(string? Reason, string? Notes); record AssignRiderInput(Guid RiderId); record PaymentRejectInput(string Reason);
 record BankConfig(string BankName, string AccountName, string AccountNumber, string Branch);
 record ReceiptStorageConfig(string BasePath);
 record PaymentRecord(Guid Id, Guid OrderId, string PaymentMethod, string PaymentStatus, string? ReceiptStorageKey, string? ReceiptOriginalName, string? ReceiptContentType, long ReceiptSize, DateTimeOffset? ReceiptUploadedAt, Guid? VerifiedBy, DateTimeOffset? VerifiedAt, Guid? RejectedBy, DateTimeOffset? RejectedAt, string? RejectionReason, DateTimeOffset CreatedAt);
-record ProductDto(Guid Id, string Sku, string Name, decimal Price, int StockQuantity, bool Active);
-record BasketLineView(Guid ProductId, string Sku, string Name, decimal UnitPrice, int Quantity, decimal LineTotal, bool Available, int StockQuantity);
+record ProductDto(Guid Id, string Sku, string Name, decimal Price, int StockQuantity, bool Active, string? ImageUrl);
+record BasketLineView(Guid ProductId, string Sku, string Name, decimal UnitPrice, int Quantity, decimal LineTotal, bool Available, int StockQuantity, string? ImageUrl);
 record BasketView(List<BasketLineView> Lines, decimal Subtotal, decimal Tax, decimal DeliveryFee, decimal Total, string Currency);
 record CheckoutResult(Guid OrderId, string Status, decimal Subtotal, decimal Tax, decimal DeliveryFee, decimal Total, string? Error = null);
 record ReservationResponse(Guid OrderId, Guid? ReservationId, string State);
@@ -267,7 +302,7 @@ sealed class IdentityClient(HttpClient http)
 sealed class CatalogClient(HttpClient http, IConfiguration config)
 {
     string Key => config["Internal:CatalogKey"] ?? string.Empty;
-    public async Task<ProductDto?> Product(Guid id) { try { var p = await http.GetFromJsonAsync<JsonElement>($"/products/{id}"); return p.ValueKind == JsonValueKind.Undefined ? null : new ProductDto(p.GetProperty("id").GetGuid(), p.GetProperty("sku").GetString()!, p.GetProperty("name").GetString()!, p.GetProperty("price").GetDecimal(), p.GetProperty("stockQuantity").GetInt32(), p.GetProperty("active").GetBoolean()); } catch { return null; } }
+    public async Task<ProductDto?> Product(Guid id) { try { var p = await http.GetFromJsonAsync<JsonElement>($"/products/{id}"); return p.ValueKind == JsonValueKind.Undefined ? null : new ProductDto(p.GetProperty("id").GetGuid(), p.GetProperty("sku").GetString()!, p.GetProperty("name").GetString()!, p.GetProperty("price").GetDecimal(), p.GetProperty("stockQuantity").GetInt32(), p.GetProperty("active").GetBoolean(), p.TryGetProperty("imageUrl", out var image) && image.ValueKind == JsonValueKind.String ? image.GetString() : null); } catch { return null; } }
     public async Task<ReservationResponse?> Reserve(Guid orderId, List<ReservationLine> lines, Guid correlation) { if (string.IsNullOrWhiteSpace(Key)) return null; using var msg = new HttpRequestMessage(HttpMethod.Post, "/internal/stock-reservations") { Content = JsonContent.Create(new { orderId, lines, correlationId = correlation }) }; msg.Headers.Add("X-Internal-Key", Key); var result = await http.SendAsync(msg); return result.IsSuccessStatusCode ? await result.Content.ReadFromJsonAsync<ReservationResponse>() : null; }
     public async Task<ReservationResponse?> Release(Guid orderId, Guid correlation) { if (string.IsNullOrWhiteSpace(Key)) return null; using var msg = new HttpRequestMessage(HttpMethod.Post, $"/internal/stock-reservations/{orderId}/release") { Content = JsonContent.Create(new { correlationId = correlation }) }; msg.Headers.Add("X-Internal-Key", Key); var result = await http.SendAsync(msg); return result.IsSuccessStatusCode ? await result.Content.ReadFromJsonAsync<ReservationResponse>() : null; }
     public async Task<ReservationResponse?> Reservation(Guid orderId) { if (string.IsNullOrWhiteSpace(Key)) return null; using var msg = new HttpRequestMessage(HttpMethod.Get, $"/internal/stock-reservations/by-order/{orderId}"); msg.Headers.Add("X-Internal-Key", Key); var result = await http.SendAsync(msg); return result.IsSuccessStatusCode ? await result.Content.ReadFromJsonAsync<ReservationResponse>() : null; }
@@ -307,7 +342,7 @@ static class OrderDb
     public static async Task<bool> DeleteAddress(NpgsqlDataSource db, Guid owner, Guid id) { await using var cmd = db.CreateCommand("DELETE FROM addresses WHERE id=$1 AND customer_id=$2"); cmd.Parameters.AddWithValue(id); cmd.Parameters.AddWithValue(owner); return await cmd.ExecuteNonQueryAsync() == 1; }
     public static async Task SetBasketLine(NpgsqlDataSource db, Guid owner, Guid product, int quantity) { await using var conn = await db.OpenConnectionAsync(); await using var tx = await conn.BeginTransactionAsync(); await using (var basket = new NpgsqlCommand("INSERT INTO baskets(customer_id) VALUES($1) ON CONFLICT(customer_id) DO UPDATE SET updated_at=now()", conn, tx)) { basket.Parameters.AddWithValue(owner); await basket.ExecuteNonQueryAsync(); } await using (var item = new NpgsqlCommand("INSERT INTO basket_items(customer_id,product_id,quantity) VALUES($1,$2,$3) ON CONFLICT(customer_id,product_id) DO UPDATE SET quantity=excluded.quantity", conn, tx)) { item.Parameters.AddWithValue(owner); item.Parameters.AddWithValue(product); item.Parameters.AddWithValue(quantity); await item.ExecuteNonQueryAsync(); } await tx.CommitAsync(); }
     public static async Task RemoveBasketLine(NpgsqlDataSource db, Guid owner, Guid product) { await using var cmd = db.CreateCommand("DELETE FROM basket_items WHERE customer_id=$1 AND product_id=$2"); cmd.Parameters.AddWithValue(owner); cmd.Parameters.AddWithValue(product); await cmd.ExecuteNonQueryAsync(); }
-    public static async Task<BasketView> Basket(NpgsqlDataSource db, Guid owner, CatalogClient catalog) { await using var cmd = db.CreateCommand("SELECT product_id,quantity FROM basket_items WHERE customer_id=$1 ORDER BY product_id"); cmd.Parameters.AddWithValue(owner); await using var reader = await cmd.ExecuteReaderAsync(); var raw = new List<(Guid ProductId, int Quantity)>(); while (await reader.ReadAsync()) raw.Add((reader.GetGuid(0), reader.GetInt32(1))); var lines = new List<BasketLineView>(); decimal subtotal = 0; foreach (var item in raw) { var product = await catalog.Product(item.ProductId); if (product is null) { lines.Add(new BasketLineView(item.ProductId, "", "Unavailable product", 0, item.Quantity, 0, false, 0)); continue; } var total = product.Price * item.Quantity; subtotal += total; lines.Add(new BasketLineView(product.Id, product.Sku, product.Name, product.Price, item.Quantity, total, product.Active && product.StockQuantity >= item.Quantity, product.StockQuantity)); } var totals = CheckoutRules.Calculate(subtotal); return new BasketView(lines, totals.Subtotal, totals.Tax, totals.DeliveryFee, totals.Total, "Rs."); }
+    public static async Task<BasketView> Basket(NpgsqlDataSource db, Guid owner, CatalogClient catalog) { await using var cmd = db.CreateCommand("SELECT product_id,quantity FROM basket_items WHERE customer_id=$1 ORDER BY product_id"); cmd.Parameters.AddWithValue(owner); await using var reader = await cmd.ExecuteReaderAsync(); var raw = new List<(Guid ProductId, int Quantity)>(); while (await reader.ReadAsync()) raw.Add((reader.GetGuid(0), reader.GetInt32(1))); var lines = new List<BasketLineView>(); decimal subtotal = 0; foreach (var item in raw) { var product = await catalog.Product(item.ProductId); if (product is null) { lines.Add(new BasketLineView(item.ProductId, "", "Unavailable product", 0, item.Quantity, 0, false, 0, null)); continue; } var total = product.Price * item.Quantity; subtotal += total; lines.Add(new BasketLineView(product.Id, product.Sku, product.Name, product.Price, item.Quantity, total, product.Active && product.StockQuantity >= item.Quantity, product.StockQuantity, product.ImageUrl)); } var totals = CheckoutRules.Calculate(subtotal); return new BasketView(lines, totals.Subtotal, totals.Tax, totals.DeliveryFee, totals.Total, "Rs."); }
     public static async Task<CheckoutResult> Checkout(NpgsqlDataSource db, Guid owner, string key, CheckoutInput input, CatalogClient catalog, Guid correlation)
     {
         var address = await Address(db, owner, input.AddressId); if (address is null) return new CheckoutResult(Guid.Empty, "Rejected", 0, 0, 0, 0, "Choose one of your saved addresses.");
@@ -338,9 +373,23 @@ static class OrderDb
     }
     public static async Task SetReservation(NpgsqlDataSource db, Guid orderId, Guid? reservationId)
     {
-        await using var cmd = db.CreateCommand("UPDATE ordering.orders SET reservation_id=$2,updated_at=now() WHERE id=$1");
-        cmd.Parameters.AddWithValue(orderId); cmd.Parameters.AddWithValue((object?)reservationId ?? DBNull.Value);
-        await cmd.ExecuteNonQueryAsync();
+        // The reservation and basket consumption must be one idempotent operation.  A retry
+        // (or the pending-order reconciler) will see reservation_id and leave any new cart
+        // quantities the customer added after checkout untouched.
+        await using var conn = await db.OpenConnectionAsync();
+        await using var tx = await conn.BeginTransactionAsync();
+        await using var reserve = new NpgsqlCommand("UPDATE ordering.orders SET reservation_id=$2,updated_at=now() WHERE id=$1 AND reservation_id IS NULL RETURNING customer_id", conn, tx);
+        reserve.Parameters.AddWithValue(orderId); reserve.Parameters.AddWithValue((object?)reservationId ?? DBNull.Value);
+        var owner = await reserve.ExecuteScalarAsync();
+        if (owner is null) { await tx.CommitAsync(); return; }
+
+        // Consume only the ordered quantities. This preserves items added while checkout was
+        // in progress and prevents a clearing retry from removing them a second time.
+        await using (var remove = new NpgsqlCommand("DELETE FROM ordering.basket_items b USING ordering.order_items i WHERE i.order_id=$1 AND b.customer_id=$2 AND b.product_id=i.product_id AND b.quantity <= i.quantity", conn, tx))
+        { remove.Parameters.AddWithValue(orderId); remove.Parameters.AddWithValue((Guid)owner); await remove.ExecuteNonQueryAsync(); }
+        await using (var decrement = new NpgsqlCommand("UPDATE ordering.basket_items b SET quantity=b.quantity-i.quantity FROM ordering.order_items i WHERE i.order_id=$1 AND b.customer_id=$2 AND b.product_id=i.product_id AND b.quantity > i.quantity", conn, tx))
+        { decrement.Parameters.AddWithValue(orderId); decrement.Parameters.AddWithValue((Guid)owner); await decrement.ExecuteNonQueryAsync(); }
+        await tx.CommitAsync();
     }
     public static async Task Finish(NpgsqlDataSource db, Guid orderId, string state, Guid actor, string reason, Guid correlation, bool clearBasket) { await using var conn = await db.OpenConnectionAsync(); await using var tx = await conn.BeginTransactionAsync(); var eventType = state == "Confirmed" ? "OrderPlaced" : state == "Cancelled" ? "OrderCancelled" : "OrderRejected"; await using var read = new NpgsqlCommand("UPDATE ordering.orders SET status=$2,updated_at=now() WHERE id=$1 RETURNING customer_id,subtotal,tax,delivery_fee,total,currency", conn, tx); read.Parameters.AddWithValue(orderId); read.Parameters.AddWithValue(state); await using var reader = await read.ExecuteReaderAsync(); if (!await reader.ReadAsync()) return; var customer = reader.GetGuid(0); var subtotal = reader.GetDecimal(1); var tax = reader.GetDecimal(2); var fee = reader.GetDecimal(3); var total = reader.GetDecimal(4); var currency = reader.GetString(5); await reader.CloseAsync(); await using (var history = new NpgsqlCommand("INSERT INTO ordering.order_status_history(order_id,status,actor_id,reason) VALUES($1,$2,$3,$4)", conn, tx)) { history.Parameters.AddWithValue(orderId); history.Parameters.AddWithValue(state); history.Parameters.AddWithValue(actor); history.Parameters.AddWithValue(reason); await history.ExecuteNonQueryAsync(); } var eventId = Guid.NewGuid(); var payload = JsonSerializer.Serialize(new { eventId, schemaVersion = 1, eventType, occurredAt = DateTimeOffset.UtcNow, correlationId = correlation, orderId, customerId = customer, status = state, subtotal, tax, deliveryFee = fee, total, currency }); await using (var outbox = new NpgsqlCommand("INSERT INTO ordering.outbox(event_id,event_type,payload) VALUES($1,$2,CAST($3 AS jsonb))", conn, tx)) { outbox.Parameters.AddWithValue(eventId); outbox.Parameters.AddWithValue(eventType); outbox.Parameters.AddWithValue(payload); await outbox.ExecuteNonQueryAsync(); } if (clearBasket) { await using var clear = new NpgsqlCommand("DELETE FROM ordering.basket_items WHERE customer_id=$1", conn, tx); clear.Parameters.AddWithValue(customer); await clear.ExecuteNonQueryAsync(); } await tx.CommitAsync(); }
     public static async Task<List<object>> Orders(NpgsqlDataSource db, Guid owner) { await using var cmd = db.CreateCommand("SELECT o.id,o.status,o.total,o.created_at,o.address_snapshot::text,(SELECT count(*) FROM ordering.order_items i WHERE i.order_id=o.id),COALESCE(p.payment_method,'CashOnDelivery'),COALESCE(p.payment_status,'NotRequired'),p.rejection_reason FROM ordering.orders o LEFT JOIN ordering.order_payments p ON p.order_id=o.id WHERE o.customer_id=$1 ORDER BY o.created_at DESC"); cmd.Parameters.AddWithValue(owner); await using var reader = await cmd.ExecuteReaderAsync(); var rows = new List<object>(); while (await reader.ReadAsync()) { var address = JsonDocument.Parse(reader.GetString(4)).RootElement.Clone(); rows.Add(new { id = reader.GetGuid(0), status = reader.GetString(1), total = reader.GetDecimal(2), createdAt = reader.GetFieldValue<DateTimeOffset>(3), itemCount = reader.GetInt64(5), address, paymentMethod = reader.GetString(6), paymentStatus = reader.GetString(7), rejectionReason = reader.IsDBNull(8) ? null : reader.GetString(8) }); } return rows; }
@@ -357,14 +406,17 @@ static class OrderDb
     }
     public static async Task CreatePayment(NpgsqlDataSource db, Guid orderId, string paymentMethod, string paymentStatus, string? receiptStorageKey, string? receiptOriginalName, string? receiptContentType, long receiptSize)
     {
-        await using var cmd = db.CreateCommand("INSERT INTO ordering.order_payments (order_id, payment_method, payment_status, receipt_storage_key, receipt_original_name, receipt_content_type, receipt_size, receipt_uploaded_at) VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $4 IS NOT NULL THEN now() ELSE NULL END) ON CONFLICT (order_id) DO UPDATE SET payment_method=EXCLUDED.payment_method, payment_status=EXCLUDED.payment_status, receipt_storage_key=EXCLUDED.receipt_storage_key, receipt_original_name=EXCLUDED.receipt_original_name, receipt_content_type=EXCLUDED.receipt_content_type, receipt_size=EXCLUDED.receipt_size, receipt_uploaded_at=EXCLUDED.receipt_uploaded_at, updated_at=now()");
-        cmd.Parameters.AddWithValue(orderId);
-        cmd.Parameters.AddWithValue(paymentMethod);
-        cmd.Parameters.AddWithValue(paymentStatus);
-        cmd.Parameters.AddWithValue((object?)receiptStorageKey ?? DBNull.Value);
-        cmd.Parameters.AddWithValue((object?)receiptOriginalName ?? DBNull.Value);
-        cmd.Parameters.AddWithValue((object?)receiptContentType ?? DBNull.Value);
-        cmd.Parameters.AddWithValue(receiptSize);
+        await using var cmd = db.CreateCommand("INSERT INTO ordering.order_payments (order_id, payment_method, payment_status, receipt_storage_key, receipt_original_name, receipt_content_type, receipt_size, receipt_uploaded_at) VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $4::text IS NOT NULL THEN now() ELSE NULL END) ON CONFLICT (order_id) DO UPDATE SET payment_method=EXCLUDED.payment_method, payment_status=EXCLUDED.payment_status, receipt_storage_key=EXCLUDED.receipt_storage_key, receipt_original_name=EXCLUDED.receipt_original_name, receipt_content_type=EXCLUDED.receipt_content_type, receipt_size=EXCLUDED.receipt_size, receipt_uploaded_at=EXCLUDED.receipt_uploaded_at, updated_at=now()");
+        // The SQL uses positional $1..$7 placeholders. Use unnamed parameters in the exact
+        // same order; named parameters can be rewritten inconsistently by Npgsql prepared
+        // statements and cause bind messages with zero parameters (08P01).
+        cmd.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Uuid, Value = orderId });
+        cmd.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text, Value = paymentMethod });
+        cmd.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text, Value = paymentStatus });
+        cmd.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text, Value = (object?)receiptStorageKey ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text, Value = (object?)receiptOriginalName ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text, Value = (object?)receiptContentType ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Bigint, Value = receiptSize });
         await cmd.ExecuteNonQueryAsync();
     }
     public static async Task<PaymentRecord?> GetPayment(NpgsqlDataSource db, Guid orderId)

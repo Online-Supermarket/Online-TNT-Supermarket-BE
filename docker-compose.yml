@@ -60,6 +60,9 @@ services:
       Services__CatalogUrl: http://catalog-api:8080
       Kafka__BootstrapServers: kafka:9092
       Internal__CatalogKey: ${CATALOG_INTERNAL_KEY:-marketflow-internal-demo-key}
+      BankTransfer__ReceiptStoragePath: /app/receipts
+    volumes:
+      - order-receipts:/app/receipts
     depends_on:
       postgres: { condition: service_healthy }
       kafka: { condition: service_healthy }
@@ -98,3 +101,4 @@ services:
     depends_on: [prometheus]
 volumes:
   postgres-data:
+  order-receipts:
