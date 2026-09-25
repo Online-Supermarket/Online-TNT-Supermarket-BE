@@ -60,6 +60,9 @@ services:
       Services__CatalogUrl: http://catalog-api:8080
       Kafka__BootstrapServers: kafka:9092
       Internal__CatalogKey: ${CATALOG_INTERNAL_KEY:-marketflow-internal-demo-key}
+      BankTransfer__ReceiptStoragePath: /app/receipts
+    volumes:
+      - order-receipts:/app/receipts
     depends_on:
       postgres: { condition: service_healthy }
       kafka: { condition: service_healthy }
@@ -72,7 +75,6 @@ services:
       ConnectionStrings__Reporting: Host=postgres;Port=5432;Database=marketflow;Username=marketflow;Password=marketflow;Search Path=reporting
       Services__IdentityUrl: http://identity-api:8080
       Kafka__BootstrapServers: kafka:9092
-    profiles: ["sprint4"]
     depends_on:
       postgres: { condition: service_healthy }
       kafka: { condition: service_healthy }
@@ -81,8 +83,9 @@ services:
     build: ./gateway
     environment:
       MARKETFLOW_CORS_ORIGIN: ${MARKETFLOW_CORS_ORIGIN:-http://localhost:5173}
+      MARKETFLOW_REPORTING_URL: ${MARKETFLOW_REPORTING_URL:-http://reporting-api:8080}
     ports: ["8080:8080"]
-    depends_on: [identity-api, catalog-api, order-api]
+    depends_on: [identity-api, catalog-api, order-api, reporting-api]
   prometheus:
     image: prom/prometheus:v2.55.1
     volumes:
@@ -98,3 +101,4 @@ services:
     depends_on: [prometheus]
 volumes:
   postgres-data:
+  order-receipts:
