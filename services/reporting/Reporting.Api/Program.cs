@@ -8,7 +8,7 @@ using NpgsqlTypes;
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(builder.Configuration.GetConnectionString("Reporting") ?? "Host=localhost;Port=5432;Database=marketflow;Username=marketflow;Password=marketflow;Search Path=reporting"));
 builder.Services.AddHttpClient<IdentityClient>(c => c.BaseAddress = new Uri(builder.Configuration["Services:IdentityUrl"] ?? "http://localhost:8081"));
-builder.Services.AddSingleton<RequestMetrics>(); builder.Services.AddHostedService<EventConsumer>();
+builder.Services.AddSingleton<RequestMetrics>(); builder.Services.AddHostedService<EventConsumer>(); builder.Services.AddHostedService<PendingStockRecovery>();
 var app = builder.Build(); app.Use(async (ctx, next) => { ctx.RequestServices.GetRequiredService<RequestMetrics>().Increment(); await next(); }); if (app.Environment.IsDevelopment() || builder.Configuration.GetValue<bool>("Migrations:ApplyOnStartup")) await ReportingDb.InitializeAsync(app.Services.GetRequiredService<NpgsqlDataSource>());
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "reporting" })); app.MapGet("/metrics", (RequestMetrics m) => Results.Text(m.AsPrometheus("reporting"), "text/plain"));
 app.MapGet("/reports/inventory", async (Guid? categoryId, int? threshold, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => !await auth.Allowed(req, "Staff", "Admin") ? Results.StatusCode(StatusCodes.Status403Forbidden) : Results.Ok(await ReportingDb.Inventory(db, categoryId, threshold ?? 5)));
@@ -31,6 +31,8 @@ public static class ReportingDb
     CREATE TABLE IF NOT EXISTS reporting.inventory_products(product_id uuid PRIMARY KEY,sku text NOT NULL,name text NOT NULL,category_id uuid NOT NULL,category_name text NOT NULL DEFAULT 'Unassigned',price numeric(12,2) NOT NULL,stock_quantity integer NOT NULL,active boolean NOT NULL,updated_at timestamptz NOT NULL);
     CREATE TABLE IF NOT EXISTS reporting.sales_orders(order_id uuid PRIMARY KEY,created_at timestamptz NOT NULL,status text NOT NULL,subtotal numeric(12,2) NOT NULL,tax numeric(12,2) NOT NULL,delivery_fee numeric(12,2) NOT NULL,total numeric(12,2) NOT NULL,currency text NOT NULL,updated_at timestamptz NOT NULL);
     CREATE TABLE IF NOT EXISTS reporting.processed_events(event_id uuid PRIMARY KEY,processed_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE IF NOT EXISTS reporting.ignored_events(event_id uuid PRIMARY KEY,event_type text NOT NULL,reason text NOT NULL,ignored_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE IF NOT EXISTS reporting.pending_events(event_id uuid PRIMARY KEY,event_type text NOT NULL,occurred_at timestamptz NOT NULL,lines jsonb NOT NULL,reason text NOT NULL,recorded_at timestamptz NOT NULL DEFAULT now());
     """; await using var cmd = db.CreateCommand(sql); await cmd.ExecuteNonQueryAsync(); }
     public static async Task<InventoryReport> Inventory(NpgsqlDataSource db, Guid? categoryId, int threshold)
     {
@@ -65,12 +67,26 @@ public static class ReportingDb
     public static async Task Apply(NpgsqlDataSource db, string json)
     {
         using var document = JsonDocument.Parse(json); var root = document.RootElement;
-        if (!root.TryGetProperty("eventId", out var eventId) || !root.TryGetProperty("eventType", out var eventType)) return;
-        var type = eventType.GetString();
-        if (type is not ("ProductChanged" or "OrderPlaced" or "OrderRejected" or "OrderCancelled" or "StockAdjusted" or "StockReplenished" or "StockReserved" or "StockReleased")) return;
-        var id = eventId.GetGuid();
+        if (!root.TryGetProperty("eventId", out var eventId) || eventId.ValueKind != JsonValueKind.String || !eventId.TryGetGuid(out var id)) throw new InvalidDataException("Event envelope is missing a valid eventId.");
+        if (!root.TryGetProperty("eventType", out var eventType) || eventType.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(eventType.GetString())) throw new InvalidDataException("Event envelope is missing a valid eventType.");
+        var type = eventType.GetString()!;
+        var supported = type is "ProductChanged" or "OrderPlaced" or "OrderRejected" or "OrderCancelled" or "StockAdjusted" or "StockReplenished" or "StockReserved" or "StockReleased";
+        if (!supported)
+        {
+            await using var ignoredConn = await db.OpenConnectionAsync();
+            await using var ignoredTx = await ignoredConn.BeginTransactionAsync();
+            await using var ignored = new NpgsqlCommand("INSERT INTO reporting.ignored_events(event_id,event_type,reason) VALUES(@event_id,@event_type,@reason) ON CONFLICT(event_id) DO NOTHING", ignoredConn, ignoredTx);
+            Add(ignored, "event_id", NpgsqlDbType.Uuid, id); Add(ignored, "event_type", NpgsqlDbType.Text, type); Add(ignored, "reason", NpgsqlDbType.Text, "Unsupported event type");
+            await ignored.ExecuteNonQueryAsync(); await ignoredTx.CommitAsync(); return;
+        }
         await using var conn = await db.OpenConnectionAsync();
         await using var transaction = await conn.BeginTransactionAsync();
+        if (type == "StockReserved" && await MissingStockProducts(conn, transaction, root))
+        {
+            await RecordPending(conn, transaction, id, root);
+            await transaction.CommitAsync();
+            return;
+        }
         await using (var seen = new NpgsqlCommand("INSERT INTO reporting.processed_events(event_id) VALUES(@event_id) ON CONFLICT DO NOTHING", conn, transaction))
         {
             Add(seen, "event_id", NpgsqlDbType.Uuid, id);
@@ -121,7 +137,48 @@ public static class ReportingDb
             foreach (var line in root.GetProperty("lines").EnumerateArray())
                 await ApplyStockDelta(conn, transaction, line.GetProperty("productId").GetGuid(), delta * line.GetProperty("quantity").GetInt32(), root.GetProperty("occurredAt").GetDateTimeOffset());
         }
+        if (type == "StockReserved")
+        {
+            await using var resolved = new NpgsqlCommand("DELETE FROM reporting.pending_events WHERE event_id=@event_id", conn, transaction);
+            Add(resolved, "event_id", NpgsqlDbType.Uuid, id); await resolved.ExecuteNonQueryAsync();
+        }
         await transaction.CommitAsync();
+    }
+    static async Task<bool> MissingStockProducts(NpgsqlConnection conn, NpgsqlTransaction transaction, JsonElement root)
+    {
+        foreach (var line in root.GetProperty("lines").EnumerateArray())
+        {
+            var productId = line.GetProperty("productId").GetGuid();
+            await using var command = new NpgsqlCommand("SELECT 1 FROM reporting.inventory_products WHERE product_id=@product_id", conn, transaction);
+            Add(command, "product_id", NpgsqlDbType.Uuid, productId);
+            if (await command.ExecuteScalarAsync() is null) return true;
+        }
+        return false;
+    }
+    static async Task RecordPending(NpgsqlConnection conn, NpgsqlTransaction transaction, Guid eventId, JsonElement root)
+    {
+        await using var command = new NpgsqlCommand("INSERT INTO reporting.pending_events(event_id,event_type,occurred_at,lines,reason) VALUES(@event_id,'StockReserved',@occurred_at,CAST(@lines AS jsonb),'Missing product projection') ON CONFLICT(event_id) DO NOTHING", conn, transaction);
+        Add(command, "event_id", NpgsqlDbType.Uuid, eventId); Add(command, "occurred_at", NpgsqlDbType.TimestampTz, root.GetProperty("occurredAt").GetDateTimeOffset()); Add(command, "lines", NpgsqlDbType.Text, root.GetProperty("lines").GetRawText());
+        await command.ExecuteNonQueryAsync();
+    }
+    public static async Task ReplayPending(NpgsqlDataSource db)
+    {
+        await using var conn = await db.OpenConnectionAsync();
+        await using var read = new NpgsqlCommand("SELECT event_id,occurred_at,lines FROM reporting.pending_events ORDER BY recorded_at LIMIT 50", conn);
+        await using var rows = await read.ExecuteReaderAsync(); var pending = new List<(Guid Id, DateTimeOffset At, string Lines)>();
+        while (await rows.ReadAsync()) pending.Add((rows.GetGuid(0), rows.GetFieldValue<DateTimeOffset>(1), rows.GetString(2)));
+        await rows.CloseAsync();
+        foreach (var item in pending) await ReplayPendingOne(db, item.Id, item.At, item.Lines);
+    }
+    static async Task ReplayPendingOne(NpgsqlDataSource db, Guid eventId, DateTimeOffset occurredAt, string lines)
+    {
+        await using var conn = await db.OpenConnectionAsync(); await using var transaction = await conn.BeginTransactionAsync();
+        var root = JsonDocument.Parse($"{{\"lines\":{lines}}}").RootElement;
+        if (await MissingStockProducts(conn, transaction, root)) { await transaction.RollbackAsync(); return; }
+        await using (var seen = new NpgsqlCommand("INSERT INTO reporting.processed_events(event_id) VALUES(@event_id) ON CONFLICT DO NOTHING", conn, transaction))
+        { Add(seen, "event_id", NpgsqlDbType.Uuid, eventId); if (await seen.ExecuteNonQueryAsync() == 0) { await transaction.CommitAsync(); return; } }
+        foreach (var line in root.GetProperty("lines").EnumerateArray()) await ApplyStockDelta(conn, transaction, line.GetProperty("productId").GetGuid(), -line.GetProperty("quantity").GetInt32(), occurredAt);
+        await using var remove = new NpgsqlCommand("DELETE FROM reporting.pending_events WHERE event_id=@event_id", conn, transaction); Add(remove, "event_id", NpgsqlDbType.Uuid, eventId); await remove.ExecuteNonQueryAsync(); await transaction.CommitAsync();
     }
     static async Task ApplyStockDelta(NpgsqlConnection conn, NpgsqlTransaction transaction, Guid productId, int delta, DateTimeOffset occurredAt)
     {
@@ -142,6 +199,18 @@ public static class ReportingDb
     static NpgsqlParameter Add(NpgsqlCommand command, string name, NpgsqlDbType type, object? value)
     {
         var parameter = command.Parameters.Add(name, type); parameter.Value = value ?? DBNull.Value; return parameter;
+    }
+}
+sealed class PendingStockRecovery(IServiceProvider services, ILogger<PendingStockRecovery> log) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stop)
+    {
+        while (!stop.IsCancellationRequested)
+        {
+            try { using var scope = services.CreateScope(); await ReportingDb.ReplayPending(scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>()); }
+            catch (Exception ex) { log.LogWarning(ex, "Pending Reporting stock recovery will retry"); }
+            await Task.Delay(TimeSpan.FromSeconds(5), stop);
+        }
     }
 }
 sealed class EventConsumer(IServiceProvider services, IConfiguration cfg, ILogger<EventConsumer> log) : BackgroundService { protected override async Task ExecuteAsync(CancellationToken stop) { var config = new ConsumerConfig { BootstrapServers = cfg["Kafka:BootstrapServers"] ?? "localhost:9092", GroupId = "reporting-v2", AutoOffsetReset = AutoOffsetReset.Earliest, EnableAutoCommit = false }; while (!stop.IsCancellationRequested) { try { using var consumer = new ConsumerBuilder<string, string>(config).Build(); consumer.Subscribe(["catalog.events", "order.events"]); while (!stop.IsCancellationRequested) { var msg = consumer.Consume(stop); using var scope = services.CreateScope(); await ReportingDb.Apply(scope.ServiceProvider.GetRequiredService<NpgsqlDataSource>(), msg.Message.Value); consumer.Commit(msg); } } catch (OperationCanceledException) { break; } catch (Exception ex) { log.LogWarning(ex, "Reporting consumer will retry"); await Task.Delay(TimeSpan.FromSeconds(3), stop); } } } }
