@@ -59,3 +59,16 @@ The Web Apps currently show Microsoft's placeholder container. No application im
 5. **Release check:** Confirm the CI gate passes, then change `AZURE_DEPLOY_ENABLED` to `true` and push to `main`. Verify the three API `/health/ready` calls, gateway `/health`, and a frontend-to-backend request. The plan is a shared B1 instance, so watch memory and restart metrics under load.
 
 The workflows do not provision PostgreSQL, Kafka, or frontend. Do not enable deployment while the three backend services cannot pass their readiness checks.
+
+## Admin password recovery
+
+Identity stores passwords as PBKDF2-HMAC-SHA512 hashes (210,000 iterations, random salt). If an existing Admin row has an empty `password_hash`, do not edit the hash directly and do not change its ID, roles, or related records. Configure a high-entropy one-time App Service setting named `Auth__AdminPasswordResetKey` on the Identity Web App, restart the app, and call the protected recovery route once:
+
+```sh
+curl --fail-with-body -X POST "$IDENTITY_OR_GATEWAY_URL/api/identity/admin/password-reset" \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Reset-Key: $ADMIN_RESET_KEY" \
+  --data '{"email":"<existing-admin-email>","newPassword":"<operator-supplied-password>"}'
+```
+
+The endpoint only updates an active account that already has the `Admin` role, hashes the supplied password using the service implementation, revokes that account's sessions, and returns no password. Remove `Auth__AdminPasswordResetKey` immediately after both Admin accounts have been reset and verify login through the gateway. Never commit the key or password, and do not run this against production without an approved change window and database backup.

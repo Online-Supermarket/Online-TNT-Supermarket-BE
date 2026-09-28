@@ -25,4 +25,18 @@ public class RoleMigrationTests
     [Fact] public void Preserves_canonical_and_mixed_roles() => Assert.Equal(["Admin", "Customer", "Staff"], Normalize(["OperationsAdmin", "Customer", "CatalogStaff"]));
     [Fact] public void Unknown_role_gets_no_permission() => Assert.Empty(Normalize(["Unknown"]));
     [Fact] public void Empty_and_null_roles_get_no_permission() { Assert.Empty(Normalize([])); Assert.Empty(Normalize(null)); }
+
+    [Fact]
+    public void Admin_role_grants_admin_authorization()
+    {
+        Assert.Contains("Admin", IdentityRoles.NormalizeAll(["Admin"]));
+        Assert.True(IdentityRoles.IsStaffOrAdmin("Admin"));
+    }
+
+    [Fact]
+    public void Non_admin_role_does_not_grant_admin_authorization()
+    {
+        Assert.DoesNotContain("Admin", IdentityRoles.NormalizeAll(["Staff"]));
+        Assert.False(IdentityRoles.NormalizeAll(["Staff"]).Contains("Admin"));
+    }
 }

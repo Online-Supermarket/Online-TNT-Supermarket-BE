@@ -1,3 +1,4 @@
+using Order.Api;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -218,7 +219,8 @@ app.MapPost("/staff/orders/{id:guid}/payment/verify", async (Guid id, HttpReques
     if (payment.PaymentStatus == "Verified") return Results.Conflict(new { message = "Payment is already verified." });
     if (payment.PaymentStatus == "Rejected") return Results.Conflict(new { message = "Payment was already rejected. Create a new order if needed." });
     if (payment.PaymentStatus != "PendingVerification") return Results.Conflict(new { message = "Payment cannot be verified in its current state." });
-    await OrderDb.UpdatePaymentStatus(db, id, "Verified", actor.Subject, null);
+    if (!await OrderDb.UpdatePaymentStatus(db, id, "Verified", actor.Subject, null))
+        return Results.Conflict(new { message = "Payment or order state changed; refresh and try again." });
     return Results.Ok(new { id, paymentStatus = "Verified" });
 });
 // Reject payment (staff/admin)
@@ -231,16 +233,22 @@ app.MapPost("/staff/orders/{id:guid}/payment/reject", async (Guid id, PaymentRej
     if (payment.PaymentStatus == "Verified") return Results.Conflict(new { message = "Payment is already verified." });
     if (payment.PaymentStatus == "Rejected") return Results.Conflict(new { message = "Payment is already rejected." });
     if (payment.PaymentStatus != "PendingVerification") return Results.Conflict(new { message = "Payment cannot be rejected in its current state." });
-    await OrderDb.UpdatePaymentStatus(db, id, "Rejected", actor.Subject, input.Reason.Trim());
+    if (!await OrderDb.UpdatePaymentStatus(db, id, "Rejected", actor.Subject, input.Reason.Trim()))
+        return Results.Conflict(new { message = "Payment or order state changed; refresh and try again." });
     return Results.Ok(new { id, paymentStatus = "Rejected" });
 });
 app.MapPost("/orders/{id:guid}/cancel", async (Guid id, CancelInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var user = await auth.Customer(req); if (user is null) return Results.Unauthorized(); return await CancelOrder(db, catalog, id, user.Subject, input.Reason, false, CorrelationId.From(req)); });
 app.MapGet("/staff/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => !await auth.Allowed(req, "Staff", "Admin") ? Results.StatusCode(403) : Results.Ok(await OrderDb.StaffOrders(db)));
 app.MapGet("/staff/orders/{id:guid}", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); var order = await OrderDb.Order(db, id, actor.Subject, true); return order is null ? Results.NotFound() : Results.Ok(order); });
 app.MapPost("/staff/orders/{id:guid}/cancel", async (Guid id, CancelInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); return await CancelOrder(db, catalog, id, actor.Subject, input.Reason, true, CorrelationId.From(req)); });
-app.MapDelete("/staff/orders/{id:guid}", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); return await OrderDb.DeleteTerminalOrder(db, id); });
-app.MapPost("/staff/orders/{id:guid}/approve", async (Guid id, OrderActionInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); var payment = await OrderDb.GetPayment(db, id); if (payment is not null && payment.PaymentMethod == "BankTransfer" && payment.PaymentStatus != "Verified") return Results.Conflict(new { message = "Bank Transfer orders can only be confirmed after payment is verified." }); return await OrderDb.Confirm(db, id, actor.Subject, input.Notes); });
-app.MapPost("/staff/orders/{id:guid}/confirm", async (Guid id, OrderActionInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); var payment = await OrderDb.GetPayment(db, id); if (payment is not null && payment.PaymentMethod == "BankTransfer" && payment.PaymentStatus != "Verified") return Results.Conflict(new { message = "Bank Transfer orders can only be confirmed after payment is verified." }); return await OrderDb.Confirm(db, id, actor.Subject, input.Notes); });
+app.MapPost("/staff/orders/{id:guid}/confirm", async (Guid id, OrderActionInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
+{
+    var actor = await auth.Principal(req, "Staff", "Admin");
+    if (actor is null) return Results.StatusCode(403);
+
+    // Confirm performs payment validation and the status update in one DB transaction.
+    return await OrderDb.Confirm(db, id, actor.Subject, input.Notes);
+});
 app.MapPost("/staff/orders/{id:guid}/reject", async (Guid id, OrderActionInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); if (string.IsNullOrWhiteSpace(input.Reason)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["reason"] = ["Rejection reason is required."] }); return await RejectOrder(db, catalog, id, actor.Subject, input.Reason, CorrelationId.From(req)); });
 app.MapGet("/staff/riders/available", async (string? zone, HttpRequest req, IdentityClient auth) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); return Results.Ok(await auth.AvailableRiders(req, zone)); });
 app.MapPost("/staff/orders/{id:guid}/assign", async (Guid id, AssignRiderInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); return await OrderDb.AssignRider(db, auth, req, id, input.RiderId, actor.Subject); });
@@ -443,35 +451,125 @@ static class OrderDb
             reader.GetFieldValue<DateTimeOffset>(14)
         );
     }
-    public static async Task<bool> UpdatePaymentStatus(NpgsqlDataSource db, Guid orderId, string status, Guid actorId, string? rejectionReason)
+    public static async Task<bool> UpdatePaymentStatus(
+        NpgsqlDataSource db, Guid orderId, string status, Guid actorId,
+        string? rejectionReason)
     {
+        if (status is not ("Verified" or "Rejected")) return false;
+        if (status == "Rejected" && string.IsNullOrWhiteSpace(rejectionReason)) return false;
+
         await using var conn = await db.OpenConnectionAsync();
         await using var tx = await conn.BeginTransactionAsync();
-        string sql = status switch
+
+        // Match the lock order used by Confirm: order row, then payment row.
+        await using (var order = new NpgsqlCommand(
+            "SELECT status FROM ordering.orders WHERE id=$1 FOR UPDATE", conn, tx))
         {
-            "Verified" => "UPDATE ordering.order_payments SET payment_status=$2, verified_by=$3, verified_at=now(), updated_at=now() WHERE order_id=$1",
-            "Rejected" => "UPDATE ordering.order_payments SET payment_status=$2, rejected_by=$3, rejected_at=now(), rejection_reason=$4, updated_at=now() WHERE order_id=$1",
-            _ => "UPDATE ordering.order_payments SET payment_status=$2, updated_at=now() WHERE order_id=$1"
-        };
-        await using var cmd = new NpgsqlCommand(sql, conn, tx);
-        cmd.Parameters.AddWithValue(orderId);
-        cmd.Parameters.AddWithValue(status);
-        cmd.Parameters.AddWithValue(actorId);
-        if (status == "Rejected") cmd.Parameters.AddWithValue((object?)rejectionReason ?? DBNull.Value);
-        var affected = await cmd.ExecuteNonQueryAsync();
-        if (affected == 0) return false;
-        await using var history = new NpgsqlCommand("INSERT INTO ordering.order_status_history(order_id,status,actor_id,reason) VALUES($1,$2,$3,$4)", conn, tx);
-        history.Parameters.AddWithValue(orderId);
-        history.Parameters.AddWithValue(status == "Verified" ? "PaymentVerified" : "PaymentRejected");
-        history.Parameters.AddWithValue(actorId);
-        history.Parameters.AddWithValue(rejectionReason ?? (status == "Verified" ? "Payment verified by staff" : "Payment rejected by staff"));
-        await history.ExecuteNonQueryAsync();
+            order.Parameters.AddWithValue(orderId);
+            if (await order.ExecuteScalarAsync() is not string orderStatus ||
+                orderStatus != "Pending")
+                return false;
+        }
+
+        // A conditional UPDATE prevents stale concurrent verification/rejection.
+        var sql = status == "Verified"
+            ? "UPDATE ordering.order_payments SET payment_status='Verified', " +
+              "verified_by=$2, verified_at=now(), updated_at=now() " +
+              "WHERE order_id=$1 AND payment_method='BankTransfer' " +
+              "AND payment_status='PendingVerification'"
+            : "UPDATE ordering.order_payments SET payment_status='Rejected', " +
+              "rejected_by=$2, rejected_at=now(), rejection_reason=$3, updated_at=now() " +
+              "WHERE order_id=$1 AND payment_method='BankTransfer' " +
+              "AND payment_status='PendingVerification'";
+
+        await using (var update = new NpgsqlCommand(sql, conn, tx))
+        {
+            update.Parameters.AddWithValue(orderId);
+            update.Parameters.AddWithValue(actorId);
+            if (status == "Rejected") update.Parameters.AddWithValue(rejectionReason!.Trim());
+            if (await update.ExecuteNonQueryAsync() != 1) return false;
+        }
+
+        await using (var history = new NpgsqlCommand(
+            "INSERT INTO ordering.order_status_history(order_id,status,actor_id,reason) " +
+            "VALUES($1,$2,$3,$4)", conn, tx))
+        {
+            history.Parameters.AddWithValue(orderId);
+            history.Parameters.AddWithValue(status == "Verified" ? "PaymentVerified" : "PaymentRejected");
+            history.Parameters.AddWithValue(actorId);
+            history.Parameters.AddWithValue(status == "Verified"
+                ? "Payment verified by staff" : rejectionReason!.Trim());
+            await history.ExecuteNonQueryAsync();
+        }
+
         await tx.CommitAsync();
         return true;
     }
     public static async Task<List<object>> StaffOrders(NpgsqlDataSource db) { await using var cmd = db.CreateCommand("SELECT o.id,o.customer_id,o.status,o.total,o.created_at,o.reservation_id,(SELECT count(*) FROM ordering.order_items i WHERE i.order_id=o.id),o.assigned_rider_id,COALESCE(p.payment_method,'CashOnDelivery'),COALESCE(p.payment_status,'NotRequired'),p.receipt_original_name,p.receipt_uploaded_at,p.rejection_reason FROM ordering.orders o LEFT JOIN ordering.order_payments p ON p.order_id=o.id ORDER BY o.created_at DESC"); await using var reader = await cmd.ExecuteReaderAsync(); var rows = new List<object>(); while (await reader.ReadAsync()) { var currentStatus = reader.GetString(2); var reservationStatus = currentStatus switch { "Confirmed" => "Reserved", "Cancelled" => "Released", "Rejected" => "Failed", _ => currentStatus }; var assignedRiderId = reader.IsDBNull(7) ? (Guid?)null : reader.GetGuid(7); var deliveryStatus = currentStatus == "Delivered" ? "Delivered" : currentStatus == "Delivery" ? "In delivery" : assignedRiderId is not null ? "Rider assigned" : "Not assigned"; rows.Add(new { id = reader.GetGuid(0), customerId = reader.GetGuid(1), status = currentStatus, total = reader.GetDecimal(3), createdAt = reader.GetFieldValue<DateTimeOffset>(4), reservationId = reader.IsDBNull(5) ? (Guid?)null : reader.GetGuid(5), reservationStatus, itemCount = reader.GetInt64(6), assignedRiderId, deliveryStatus, paymentMethod = reader.GetString(8), paymentStatus = reader.GetString(9), receiptFileName = reader.IsDBNull(10) ? null : reader.GetString(10), receiptUploadedAt = reader.IsDBNull(11) ? (DateTimeOffset?)null : reader.GetFieldValue<DateTimeOffset>(11), rejectionReason = reader.IsDBNull(12) ? null : reader.GetString(12) }); } return rows; }
-    public static async Task<IResult> DeleteTerminalOrder(NpgsqlDataSource db, Guid id) { await using var conn = await db.OpenConnectionAsync(); await using var tx = await conn.BeginTransactionAsync(); await using var status = new NpgsqlCommand("SELECT status FROM ordering.orders WHERE id=$1 FOR UPDATE", conn, tx); status.Parameters.AddWithValue(id); var value = await status.ExecuteScalarAsync(); if (value is null) return Results.NotFound(); if (value is not string currentStatus || (currentStatus != "Cancelled" && currentStatus != "Rejected")) return Results.Conflict(new { message = "Only cancelled or rejected orders can be deleted." }); foreach (var sql in new[] { "DELETE FROM ordering.order_status_history WHERE order_id=$1", "DELETE FROM ordering.order_items WHERE order_id=$1", "DELETE FROM ordering.checkout_keys WHERE order_id=$1", "DELETE FROM ordering.orders WHERE id=$1" }) { await using var cmd = new NpgsqlCommand(sql, conn, tx); cmd.Parameters.AddWithValue(id); await cmd.ExecuteNonQueryAsync(); } await tx.CommitAsync(); return Results.NoContent(); }
-    public static async Task<IResult> Confirm(NpgsqlDataSource db, Guid id, Guid actor, string? notes) { if (!await Transition(db, id, "Pending", "Confirmed", actor, notes?.Trim() ?? "Confirmed by operations", "confirmed_by_user_id=$3,confirmed_at=now()")) return Results.Conflict(new { message = "Only pending orders can be confirmed." }); return Results.Ok(new { id, status = "Confirmed" }); }
+    public static async Task<IResult> Confirm(NpgsqlDataSource db, Guid id, Guid actor, string? notes)
+    {
+        await using var conn = await db.OpenConnectionAsync();
+        await using var tx = await conn.BeginTransactionAsync();
+
+        // Always lock the order before its payment row. Payment verification and
+        // rejection take locks in this same order, preventing a status race.
+        await using (var order = new NpgsqlCommand(
+            "SELECT status FROM ordering.orders WHERE id=$1 FOR UPDATE", conn, tx))
+        {
+            order.Parameters.AddWithValue(id);
+            var status = await order.ExecuteScalarAsync();
+            if (status is null)
+                return Results.NotFound(new { message = "Order not found." });
+            if (status is not string state || state != "Pending")
+                return Results.Conflict(new { message = "Only pending orders can be confirmed." });
+        }
+
+        string method;
+        string paymentStatus;
+        await using (var payment = new NpgsqlCommand(
+            "SELECT payment_method, payment_status FROM ordering.order_payments " +
+            "WHERE order_id=$1 FOR UPDATE", conn, tx))
+        {
+            payment.Parameters.AddWithValue(id);
+            await using var reader = await payment.ExecuteReaderAsync();
+            if (!await reader.ReadAsync())
+                return Results.Conflict(new { message = "Payment record is missing. Order cannot be confirmed." });
+            method = reader.GetString(0);
+            paymentStatus = reader.GetString(1);
+        }
+
+        // Explicitly reject unknown methods and inconsistent COD payment states.
+        if (method != "CashOnDelivery" && method != "BankTransfer")
+            return Results.Conflict(new { message = "Unsupported payment method." });
+        if ((method == "CashOnDelivery" && paymentStatus != "NotRequired") ||
+            !PaymentRules.CanConfirmOrder(method, paymentStatus))
+            return Results.Conflict(new { message = "Payment is not eligible for confirmation." });
+
+        await using (var update = new NpgsqlCommand(
+            "UPDATE ordering.orders SET status='Confirmed', updated_at=now(), " +
+            "confirmed_by_user_id=$2, confirmed_at=now() " +
+            "WHERE id=$1 AND status='Pending'", conn, tx))
+        {
+            update.Parameters.AddWithValue(id);
+            update.Parameters.AddWithValue(actor);
+            if (await update.ExecuteNonQueryAsync() != 1)
+                return Results.Conflict(new { message = "Order state changed; refresh and try again." });
+        }
+
+        await using (var history = new NpgsqlCommand(
+            "INSERT INTO ordering.order_status_history(order_id,status,actor_id,reason) " +
+            "VALUES($1,'Confirmed',$2,$3)", conn, tx))
+        {
+            history.Parameters.AddWithValue(id);
+            history.Parameters.AddWithValue(actor);
+            history.Parameters.AddWithValue(string.IsNullOrWhiteSpace(notes)
+                ? "Confirmed by operations" : notes.Trim());
+            await history.ExecuteNonQueryAsync();
+        }
+
+        await tx.CommitAsync();
+        return Results.Ok(new { id, status = "Confirmed" });
+    }
     public static async Task<bool> Transition(NpgsqlDataSource db, Guid id, string from, string to, Guid actor, string reason, string? extraSet = null) { await using var conn = await db.OpenConnectionAsync(); await using var tx = await conn.BeginTransactionAsync(); await using var update = new NpgsqlCommand($"UPDATE ordering.orders SET status=$2,updated_at=now(){(extraSet is null ? "" : "," + extraSet)} WHERE id=$1 AND status=$4", conn, tx); update.Parameters.AddWithValue(id); update.Parameters.AddWithValue(to); update.Parameters.AddWithValue(actor); update.Parameters.AddWithValue(from); if (await update.ExecuteNonQueryAsync() != 1) return false; await using var history = new NpgsqlCommand("INSERT INTO ordering.order_status_history(order_id,status,actor_id,reason) VALUES($1,$2,$3,$4)", conn, tx); history.Parameters.AddWithValue(id); history.Parameters.AddWithValue(to); history.Parameters.AddWithValue(actor); history.Parameters.AddWithValue(reason); await history.ExecuteNonQueryAsync(); await tx.CommitAsync(); return true; }
     public static async Task<IResult> AssignRider(NpgsqlDataSource db, IdentityClient identity, HttpRequest request, Guid orderId, Guid riderId, Guid actor) { var order = await Order(db, orderId, actor, true); if (order is null) return Results.NotFound(); if (order.Status != "Confirmed") return Results.Conflict(new { message = "Only confirmed orders can be assigned a rider." }); var rider = (await identity.AvailableRiders(request, null)).FirstOrDefault(x => x.TryGetProperty("riderId", out var rid) && rid.GetGuid() == riderId); if (rider.ValueKind == JsonValueKind.Undefined) return Results.Conflict(new { message = "Rider is not active or available." }); await using var cmd = db.CreateCommand("UPDATE ordering.orders SET assigned_rider_id=$2,assigned_at=now(),assigned_by_user_id=$3,updated_at=now() WHERE id=$1 AND status='Confirmed'"); cmd.Parameters.AddWithValue(orderId); cmd.Parameters.AddWithValue(riderId); cmd.Parameters.AddWithValue(actor); if (await cmd.ExecuteNonQueryAsync() != 1) return Results.Conflict(new { message = "Order state changed; refresh and try again." }); return Results.Ok(new { orderId, riderId, status = "Confirmed" }); }
     public static async Task<IResult> StartDelivery(NpgsqlDataSource db, IdentityClient identity, HttpRequest request, Guid id, Guid actor, Guid? requiredRider = null) { await using var cmd = db.CreateCommand("SELECT assigned_rider_id FROM ordering.orders WHERE id=$1 AND status='Confirmed'"); cmd.Parameters.AddWithValue(id); var value = await cmd.ExecuteScalarAsync(); if (value is null) return Results.Conflict(new { message = "Only confirmed orders can start delivery." }); if (value is DBNull) return Results.UnprocessableEntity(new { message = "A rider must be assigned before starting delivery." }); var riderId = (Guid)value; if (requiredRider is not null && riderId != requiredRider) return Results.StatusCode(403); if (!await identity.SetAvailability(request, riderId, "Busy")) return Results.Conflict(new { message = "Rider is no longer available." }); if (!await Transition(db, id, "Confirmed", "Delivery", actor, "Delivery started")) { _ = await identity.SetAvailability(request, riderId, "Available"); return Results.Conflict(new { message = "Order state changed; refresh and try again." }); } return Results.Ok(new { id, status = "Delivery" }); }

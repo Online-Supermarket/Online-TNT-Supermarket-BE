@@ -43,10 +43,29 @@ app.MapPost("/auth/login", async (LoginRequest request, NpgsqlDataSource db, Tok
     if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["credentials"] = ["Email and password are required."] });
     await using var cmd = db.CreateCommand("SELECT id,email,display_name,password_hash,roles,active FROM users WHERE lower(email)=lower($1)"); cmd.Parameters.AddWithValue(request.Email.Trim());
     await using var reader = await cmd.ExecuteReaderAsync();
-    if (!await reader.ReadAsync() || !reader.GetBoolean(5) || !Password.Verify(request.Password, reader.GetString(3))) return Results.Unauthorized();
+    if (!await reader.ReadAsync() || !reader.GetBoolean(5) || !PasswordHasher.Verify(request.Password, reader.GetString(3))) return Results.Unauthorized();
     var user = new User(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), IdentityRoles.NormalizeAll(reader.GetFieldValue<string[]>(4))); var token = tokens.Create(user); await reader.CloseAsync();
     await using var session = db.CreateCommand("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ($1,$2,$3)"); session.Parameters.AddWithValue(TokenService.Hash(token)); session.Parameters.AddWithValue(user.Id); session.Parameters.AddWithValue(DateTimeOffset.UtcNow.AddHours(8)); await session.ExecuteNonQueryAsync();
     return Results.Ok(new { accessToken = token, tokenType = "Bearer", expiresInSeconds = 28800, user = new { user.Id, user.Email, user.DisplayName, roles = user.Roles } });
+});
+// Break-glass recovery for accounts that cannot authenticate because their stored
+// hash is missing. The reset key is supplied only through the deployment secret
+// store; no password or key is stored in source or database.
+app.MapPost("/admin/password-reset", async (AdminPasswordResetRequest request, HttpRequest http, IConfiguration configuration, NpgsqlDataSource db) =>
+{
+    var configuredKey = configuration["Auth:AdminPasswordResetKey"];
+    var suppliedKey = http.Headers["X-Admin-Reset-Key"].FirstOrDefault();
+    if (string.IsNullOrWhiteSpace(configuredKey) || string.IsNullOrWhiteSpace(suppliedKey) || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(configuredKey), Encoding.UTF8.GetBytes(suppliedKey))) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.NewPassword) || request.NewPassword.Length < 8) return Results.ValidationProblem(new Dictionary<string, string[]> { ["newPassword"] = ["A new password of at least 8 characters is required."] });
+    await using var conn = await db.OpenConnectionAsync();
+    await using var tx = await conn.BeginTransactionAsync();
+    await using var update = new NpgsqlCommand("UPDATE identity.users SET password_hash=$1, updated_at=now() WHERE lower(email)=lower($2) AND active=true AND 'Admin'=ANY(roles) RETURNING id", conn, tx);
+    update.Parameters.AddWithValue(PasswordHasher.Hash(request.NewPassword)); update.Parameters.AddWithValue(request.Email.Trim());
+    var id = await update.ExecuteScalarAsync();
+    if (id is null) { await tx.RollbackAsync(); return Results.NotFound(new { message = "Active Admin account was not found." }); }
+    await using var revoke = new NpgsqlCommand("DELETE FROM identity.sessions WHERE user_id=$1", conn, tx); revoke.Parameters.AddWithValue((Guid)id); await revoke.ExecuteNonQueryAsync();
+    await tx.CommitAsync();
+    return Results.NoContent();
 });
 app.MapPost("/auth/register", async (RegisterRequest request, NpgsqlDataSource db, TokenService tokens) =>
 {
@@ -54,7 +73,7 @@ app.MapPost("/auth/register", async (RegisterRequest request, NpgsqlDataSource d
     var profileErrors = IdentityValidation.Profile(request.IdNumber, request.ContactNumber);
     if (profileErrors.Count > 0) return Results.ValidationProblem(profileErrors);
     var user = new User(Guid.NewGuid(), request.Email.Trim(), request.DisplayName.Trim(), ["Customer"]);
-    try { await using var cmd = db.CreateCommand("INSERT INTO users(id,email,display_name,password_hash,roles,full_name,id_number,contact_number,district,address) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"); cmd.Parameters.AddWithValue(user.Id); cmd.Parameters.AddWithValue(user.Email); cmd.Parameters.AddWithValue(user.DisplayName); cmd.Parameters.AddWithValue(Password.Hash(request.Password)); cmd.Parameters.AddWithValue(user.Roles); cmd.Parameters.AddWithValue((object?)request.FullName?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)request.IdNumber?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)request.ContactNumber?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)request.District?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)request.Address?.Trim() ?? DBNull.Value); await cmd.ExecuteNonQueryAsync(); var token = tokens.Create(user); await using var session = db.CreateCommand("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,$3)"); session.Parameters.AddWithValue(TokenService.Hash(token)); session.Parameters.AddWithValue(user.Id); session.Parameters.AddWithValue(DateTimeOffset.UtcNow.AddHours(8)); await session.ExecuteNonQueryAsync(); return Results.Created("/users/me", new { accessToken = token, tokenType = "Bearer", expiresInSeconds = 28800, user = new { user.Id, user.Email, user.DisplayName, roles = user.Roles } }); }
+    try { await using var cmd = db.CreateCommand("INSERT INTO users(id,email,display_name,password_hash,roles,full_name,id_number,contact_number,district,address) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"); cmd.Parameters.AddWithValue(user.Id); cmd.Parameters.AddWithValue(user.Email); cmd.Parameters.AddWithValue(user.DisplayName); cmd.Parameters.AddWithValue(PasswordHasher.Hash(request.Password)); cmd.Parameters.AddWithValue(user.Roles); cmd.Parameters.AddWithValue((object?)request.FullName?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)request.IdNumber?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)request.ContactNumber?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)request.District?.Trim() ?? DBNull.Value); cmd.Parameters.AddWithValue((object?)request.Address?.Trim() ?? DBNull.Value); await cmd.ExecuteNonQueryAsync(); var token = tokens.Create(user); await using var session = db.CreateCommand("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,$3)"); session.Parameters.AddWithValue(TokenService.Hash(token)); session.Parameters.AddWithValue(user.Id); session.Parameters.AddWithValue(DateTimeOffset.UtcNow.AddHours(8)); await session.ExecuteNonQueryAsync(); return Results.Created("/users/me", new { accessToken = token, tokenType = "Bearer", expiresInSeconds = 28800, user = new { user.Id, user.Email, user.DisplayName, roles = user.Roles } }); }
     catch (PostgresException e) when (e.SqlState == "23505") { return Results.Conflict(new { message = "An account with that email already exists." }); }
 });
 app.MapPost("/auth/logout", async (HttpRequest request, NpgsqlDataSource db) => { var token = TokenService.GetBearer(request); if (token is null) return Results.Unauthorized(); await using var cmd = db.CreateCommand("UPDATE sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL"); cmd.Parameters.AddWithValue(TokenService.Hash(token)); await cmd.ExecuteNonQueryAsync(); return Results.NoContent(); });
@@ -163,7 +182,7 @@ app.MapPost("/admin/users", async (AdminUserRequest request, HttpRequest http, N
     {
         await using (var cmd = new NpgsqlCommand("INSERT INTO identity.users(id,email,display_name,password_hash,roles,full_name,contact_number,district,address,assigned_store,availability_status,active,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())", conn, tx))
         {
-            cmd.Parameters.AddWithValue(user.Id); cmd.Parameters.AddWithValue(user.Email); cmd.Parameters.AddWithValue(user.DisplayName); cmd.Parameters.AddWithValue(Password.Hash(request.Password)); cmd.Parameters.AddWithValue(user.Roles);
+            cmd.Parameters.AddWithValue(user.Id); cmd.Parameters.AddWithValue(user.Email); cmd.Parameters.AddWithValue(user.DisplayName); cmd.Parameters.AddWithValue(PasswordHasher.Hash(request.Password)); cmd.Parameters.AddWithValue(user.Roles);
             cmd.Parameters.AddWithValue((object?)request.FullName?.Trim() ?? DBNull.Value);
             cmd.Parameters.AddWithValue((object?)request.ContactNumber?.Trim() ?? DBNull.Value);
             cmd.Parameters.AddWithValue((object?)request.District?.Trim() ?? DBNull.Value);
@@ -375,6 +394,7 @@ app.MapDelete("/admin/users/{id:guid}", async (Guid id, HttpRequest http, Npgsql
 app.Run();
 
 record LoginRequest(string Email, string Password);
+record AdminPasswordResetRequest(string Email, string NewPassword);
 record RegisterRequest(string Email, string DisplayName, string Password, string? FullName = null, string? IdNumber = null, string? ContactNumber = null, string? District = null, string? Address = null);
 record AdminUserRequest(string Email, string DisplayName, string Password, string[] Roles, string? FullName = null, string? ContactNumber = null, string? AssignedStore = null, string? AvailabilityStatus = null, bool Active = true, string? VehicleType = null, string? VehicleNumber = null, string? LicenseNumber = null, string? District = null, string? Address = null, string? VehicleModel = null, string? IdNumber = null)
 {
@@ -455,7 +475,7 @@ static class Database
                     new User(Guid.Parse("22222222-2222-2222-2222-222222222222"), "customer@marketflow.local", "Demo Customer", ["Customer"]),
                     new User(Guid.Parse("33333333-3333-3333-3333-333333333333"), "staff@marketflow.local", "Sam Staff", ["Staff"]),
                     new User(Guid.Parse("44444444-4444-4444-4444-444444444444"), "driver@marketflow.local", "Dave Driver", ["Rider"])
-                }) { await using var seed = new NpgsqlCommand("INSERT INTO identity.users(id,email,display_name,password_hash,roles) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(email) DO NOTHING", conn, tx); seed.Parameters.AddWithValue(user.Id); seed.Parameters.AddWithValue(user.Email); seed.Parameters.AddWithValue(user.DisplayName); seed.Parameters.AddWithValue(Password.Hash("ChangeMe!123")); seed.Parameters.AddWithValue(user.Roles); await seed.ExecuteNonQueryAsync(); }
+                }) { await using var seed = new NpgsqlCommand("INSERT INTO identity.users(id,email,display_name,password_hash,roles) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(email) DO NOTHING", conn, tx); seed.Parameters.AddWithValue(user.Id); seed.Parameters.AddWithValue(user.Email); seed.Parameters.AddWithValue(user.DisplayName); seed.Parameters.AddWithValue(PasswordHasher.Hash("ChangeMe!123")); seed.Parameters.AddWithValue(user.Roles); await seed.ExecuteNonQueryAsync(); }
             }
         }
 
@@ -519,7 +539,7 @@ sealed class TokenService(IConfiguration config)
     public bool TryRead(string token, out TokenPayload payload) { payload = default!; var x = token.Split('.'); if (x.Length is not 2 and not 3) return false; try { var signed = x.Length == 3 ? $"{x[0]}.{x[1]}" : x[0]; var signature = x[^1]; var actual = Convert.FromBase64String(FromUrl(signature)); var expected = HMACSHA256.HashData(_key, Encoding.UTF8.GetBytes(signed)); if (!CryptographicOperations.FixedTimeEquals(actual, expected)) return false; var json = x.Length == 3 ? x[1] : x[0]; var d = JsonDocument.Parse(Convert.FromBase64String(FromUrl(json))).RootElement; string[]? roles = null; if (d.TryGetProperty("role", out var role) && role.ValueKind == JsonValueKind.Array) roles = IdentityRoles.NormalizeAll(role.EnumerateArray().Select(r => r.GetString() ?? "")); var p = new TokenPayload(d.GetProperty("sub").GetGuid(), DateTimeOffset.FromUnixTimeSeconds(d.GetProperty("exp").GetInt64()), roles); if (p.ExpiresAt <= DateTimeOffset.UtcNow) return false; payload = p; return true; } catch { return false; } }
     static string ToUrl(string s)=>s.TrimEnd('=').Replace('+','-').Replace('/','_'); static string FromUrl(string s)=>s.Replace('-','+').Replace('_','/')+new string('=',(4-s.Length%4)%4); public static string? GetBearer(HttpRequest r)=>r.Headers.Authorization.FirstOrDefault()?.Split(' ',2) is ["Bearer",var t]?t:null; public static string Hash(string t)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(t)));
 }
-static class Password { public static string Hash(string p) { var s=RandomNumberGenerator.GetBytes(16); var h=Rfc2898DeriveBytes.Pbkdf2(p,s,210000,HashAlgorithmName.SHA512,32); return $"{Convert.ToBase64String(s)}:{Convert.ToBase64String(h)}"; } public static bool Verify(string p,string stored) { var a=stored.Split(':'); if(a.Length!=2)return false; return CryptographicOperations.FixedTimeEquals(Rfc2898DeriveBytes.Pbkdf2(p,Convert.FromBase64String(a[0]),210000,HashAlgorithmName.SHA512,32),Convert.FromBase64String(a[1])); } }
+// Password hashing is centralized in PasswordHasher so reset and login use the same format.
 static class IdentityAuth
 {
     public static async Task<bool> IsAdmin(HttpRequest request, NpgsqlDataSource db, TokenService tokens) => (await Principal(request, db, tokens))?.Roles.Any(r => IdentityRoles.Normalize(r) == "Admin") == true;
