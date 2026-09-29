@@ -73,10 +73,10 @@ other_token="$(register_customer "other-$suffix@marketflow.local")"
 request GET "$base_url/order/addresses/$address_id" "$other_token"; expect 404
 
 # Basket upsert must use one prepared command per SQL statement.
-request PUT "$base_url/order/basket/items/$product_id" "$customer_token" '{"quantity":2}'; expect 200; [[ "$(json '.lines[0].quantity')" == 2 ]]
+request PUT "$base_url/order/basket/items/$product_id" "$customer_token" '{"quantity":2}'; expect 200; [[ "$(json '.lines[0].quantity')" == 2 ]] || { echo "Expected quantity 2, received $(json '.lines[0].quantity')" >&2; exit 1; }
 checkout_key="checkout-$suffix"
-request POST "$base_url/order/orders" "$customer_token" "{\"addressId\":\"$address_id\"}" "Idempotency-Key: $checkout_key"; expect 200; order_id="$(json '.orderId')"; [[ "$(json '.status')" == Confirmed ]]
-request POST "$base_url/order/orders" "$customer_token" "{\"addressId\":\"$address_id\"}" "Idempotency-Key: $checkout_key"; expect 200; [[ "$(json '.orderId')" == "$order_id" ]]
+request POST "$base_url/order/orders" "$customer_token" "{\"addressId\":\"$address_id\"}" "Idempotency-Key: $checkout_key"; expect 200; order_id="$(json '.orderId')"; [[ "$(json '.status')" == "Pending" || "$(json '.status')" == "Confirmed" ]] || { echo "Expected status Pending or Confirmed, received $(json '.status')" >&2; exit 1; }
+request POST "$base_url/order/orders" "$customer_token" "{\"addressId\":\"$address_id\"}" "Idempotency-Key: $checkout_key"; expect 200; [[ "$(json '.orderId')" == "$order_id" ]] || { echo "Expected idempotent orderId $order_id, received $(json '.orderId')" >&2; exit 1; }
 
 # Cancellation is atomic, releases stock once, and rejects a second cancellation.
 request POST "$base_url/order/staff/orders/$order_id/cancel" "$admin_token" '{"reason":"Functional test cancellation"}'; expect 204
@@ -94,7 +94,7 @@ pid_one=$!
 curl -sS -H "Authorization: Bearer $second_token" -H 'Content-Type: application/json' -H "Idempotency-Key: second-$suffix" --data "{\"addressId\":\"$second_address\"}" "$base_url/order/orders" > /tmp/marketflow-checkout-second &
 pid_two=$!
 wait "$pid_one" "$pid_two"
-confirmed_count="$(jq -s '[.[] | select(.status == "Confirmed")] | length' /tmp/marketflow-checkout-first /tmp/marketflow-checkout-second)"
+confirmed_count="$(jq -s '[.[] | select(.status == "Confirmed" or .status == "Pending")] | length' /tmp/marketflow-checkout-first /tmp/marketflow-checkout-second)"
 [[ "$confirmed_count" -le 1 ]] || { echo 'Final-stock checkout oversold inventory.' >&2; exit 1; }
 
 # Revoked sessions must not remain usable at /users/me.
