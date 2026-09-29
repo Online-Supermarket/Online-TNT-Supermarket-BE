@@ -48,7 +48,7 @@ app.MapDelete("/addresses/{id:guid}", async (Guid id, HttpRequest req, IdentityC
 app.MapGet("/basket", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var user = await auth.Customer(req); return user is null ? Results.Unauthorized() : Results.Ok(await OrderDb.Basket(db, user.Subject, catalog)); });
 app.MapPut("/basket/items/{productId:guid}", async (Guid productId, BasketLineInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var user = await auth.Customer(req); if (user is null) return Results.Unauthorized(); if (input.Quantity <= 0) return Results.ValidationProblem(new Dictionary<string, string[]> { ["quantity"] = ["Quantity must be positive."] }); var product = await catalog.Product(productId); if (product is null || !product.Active) return Results.BadRequest(new { message = "Product is not available." }); if (input.Quantity > product.StockQuantity) return Results.Conflict(new { message = $"Only {product.StockQuantity} items are available in stock." }); await OrderDb.SetBasketLine(db, user.Subject, productId, input.Quantity); return Results.Ok(await OrderDb.Basket(db, user.Subject, catalog)); });
 app.MapDelete("/basket/items/{productId:guid}", async (Guid productId, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var user = await auth.Customer(req); if (user is null) return Results.Unauthorized(); await OrderDb.RemoveBasketLine(db, user.Subject, productId); return Results.Ok(await OrderDb.Basket(db, user.Subject, catalog)); });
-app.MapPost("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog, ReceiptStorageConfig storageConfig, ILogger<Program> log) =>
+app.MapPost("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog, ReceiptStorageConfig storageConfig, BankConfig bankConfig, ILogger<Program> log) =>
 {
     var user = await auth.Customer(req); if (user is null) return Results.Unauthorized();
     var key = req.Headers["Idempotency-Key"].FirstOrDefault(); if (string.IsNullOrWhiteSpace(key) || key.Length > 160) return Results.ValidationProblem(new Dictionary<string, string[]> { ["Idempotency-Key"] = ["A non-empty idempotency key of at most 160 characters is required."] });
@@ -95,6 +95,8 @@ app.MapPost("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSo
     if (paymentMethod != "CashOnDelivery" && paymentMethod != "BankTransfer")
         return Results.BadRequest(new { message = "Invalid payment method. Allowed: CashOnDelivery, BankTransfer." });
 
+    if (paymentMethod == "BankTransfer" && !bankConfig.IsConfigured)
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
     // Validate receipt for BankTransfer
     string? receiptStorageKey = null; string? receiptOriginalName = null; string? receiptContentType = null; long receiptSize = 0;
     if (paymentMethod == "BankTransfer")
@@ -177,9 +179,9 @@ app.MapGet("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSou
 app.MapGet("/orders/my", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var user = await auth.Customer(req); return user is null ? Results.Unauthorized() : Results.Ok(await OrderDb.Orders(db, user.Subject)); });
 app.MapGet("/orders/{id:guid}", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var user = await auth.Customer(req); if (user is null) return Results.Unauthorized(); var order = await OrderDb.Order(db, id, user.Subject, false); return order is null ? Results.NotFound() : Results.Ok(order); });
 // Bank config endpoints (public)
-app.MapGet("/bank-config", (BankConfig cfg) => Results.Ok(new { bankName = cfg.BankName, accountName = cfg.AccountName, accountNumber = cfg.AccountNumber, branch = cfg.Branch }));
-app.MapGet("/orders/bank-config", (BankConfig cfg) => Results.Ok(new { bankName = cfg.BankName, accountName = cfg.AccountName, accountNumber = cfg.AccountNumber, branch = cfg.Branch }));
-app.MapGet("/order/bank-config", (BankConfig cfg) => Results.Ok(new { bankName = cfg.BankName, accountName = cfg.AccountName, accountNumber = cfg.AccountNumber, branch = cfg.Branch }));
+app.MapGet("/bank-config", (BankConfig cfg) => BankConfigResponse(cfg));
+app.MapGet("/orders/bank-config", (BankConfig cfg) => BankConfigResponse(cfg));
+app.MapGet("/order/bank-config", (BankConfig cfg) => BankConfigResponse(cfg));
 // Receipt access endpoint (protected)
 app.MapGet("/orders/{id:guid}/payment/receipt", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, ReceiptStorageConfig storageConfig, ILogger<Program> log) =>
 {
@@ -214,13 +216,9 @@ app.MapGet("/orders/{id:guid}/payment/receipt", async (Guid id, HttpRequest req,
 app.MapPost("/staff/orders/{id:guid}/payment/verify", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
 {
     var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
-    var payment = await OrderDb.GetPayment(db, id);
-    if (payment is null) return Results.NotFound(new { message = "No payment record found for this order." });
-    if (payment.PaymentStatus == "Verified") return Results.Conflict(new { message = "Payment is already verified." });
-    if (payment.PaymentStatus == "Rejected") return Results.Conflict(new { message = "Payment was already rejected. Create a new order if needed." });
-    if (payment.PaymentStatus != "PendingVerification") return Results.Conflict(new { message = "Payment cannot be verified in its current state." });
-    if (!await OrderDb.UpdatePaymentStatus(db, id, "Verified", actor.Subject, null))
-        return Results.Conflict(new { message = "Payment or order state changed; refresh and try again." });
+    var update = await OrderDb.UpdatePaymentStatus(db, id, "Verified", actor.Subject, null);
+    if (!update.PaymentExists) return Results.NotFound(new { message = "No payment record found for this order." });
+    if (!update.Updated) return Results.Conflict(new { message = update.Message });
     return Results.Ok(new { id, paymentStatus = "Verified" });
 });
 // Reject payment (staff/admin)
@@ -228,27 +226,16 @@ app.MapPost("/staff/orders/{id:guid}/payment/reject", async (Guid id, PaymentRej
 {
     var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403);
     if (string.IsNullOrWhiteSpace(input.Reason)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["reason"] = ["Rejection reason is required."] });
-    var payment = await OrderDb.GetPayment(db, id);
-    if (payment is null) return Results.NotFound(new { message = "No payment record found for this order." });
-    if (payment.PaymentStatus == "Verified") return Results.Conflict(new { message = "Payment is already verified." });
-    if (payment.PaymentStatus == "Rejected") return Results.Conflict(new { message = "Payment is already rejected." });
-    if (payment.PaymentStatus != "PendingVerification") return Results.Conflict(new { message = "Payment cannot be rejected in its current state." });
-    if (!await OrderDb.UpdatePaymentStatus(db, id, "Rejected", actor.Subject, input.Reason.Trim()))
-        return Results.Conflict(new { message = "Payment or order state changed; refresh and try again." });
+    var update = await OrderDb.UpdatePaymentStatus(db, id, "Rejected", actor.Subject, input.Reason.Trim());
+    if (!update.PaymentExists) return Results.NotFound(new { message = "No payment record found for this order." });
+    if (!update.Updated) return Results.Conflict(new { message = update.Message });
     return Results.Ok(new { id, paymentStatus = "Rejected" });
 });
 app.MapPost("/orders/{id:guid}/cancel", async (Guid id, CancelInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var user = await auth.Customer(req); if (user is null) return Results.Unauthorized(); return await CancelOrder(db, catalog, id, user.Subject, input.Reason, false, CorrelationId.From(req)); });
 app.MapGet("/staff/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => !await auth.Allowed(req, "Staff", "Admin") ? Results.StatusCode(403) : Results.Ok(await OrderDb.StaffOrders(db)));
 app.MapGet("/staff/orders/{id:guid}", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); var order = await OrderDb.Order(db, id, actor.Subject, true); return order is null ? Results.NotFound() : Results.Ok(order); });
 app.MapPost("/staff/orders/{id:guid}/cancel", async (Guid id, CancelInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); return await CancelOrder(db, catalog, id, actor.Subject, input.Reason, true, CorrelationId.From(req)); });
-app.MapPost("/staff/orders/{id:guid}/confirm", async (Guid id, OrderActionInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) =>
-{
-    var actor = await auth.Principal(req, "Staff", "Admin");
-    if (actor is null) return Results.StatusCode(403);
-
-    // Confirm performs payment validation and the status update in one DB transaction.
-    return await OrderDb.Confirm(db, id, actor.Subject, input.Notes);
-});
+app.MapPost("/staff/orders/{id:guid}/confirm", async (Guid id, OrderActionInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); return await OrderDb.Confirm(db, id, actor.Subject, input.Notes); });
 app.MapPost("/staff/orders/{id:guid}/reject", async (Guid id, OrderActionInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); if (string.IsNullOrWhiteSpace(input.Reason)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["reason"] = ["Rejection reason is required."] }); return await RejectOrder(db, catalog, id, actor.Subject, input.Reason, CorrelationId.From(req)); });
 app.MapGet("/staff/riders/available", async (string? zone, HttpRequest req, IdentityClient auth) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); return Results.Ok(await auth.AvailableRiders(req, zone)); });
 app.MapPost("/staff/orders/{id:guid}/assign", async (Guid id, AssignRiderInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var actor = await auth.Principal(req, "Staff", "Admin"); if (actor is null) return Results.StatusCode(403); return await OrderDb.AssignRider(db, auth, req, id, input.RiderId, actor.Subject); });
@@ -259,6 +246,9 @@ app.MapPost("/orders/{id:guid}/start-delivery", async (Guid id, HttpRequest req,
 app.MapPost("/orders/{id:guid}/deliver", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var rider = await auth.Principal(req, "Rider"); if (rider is null) return Results.StatusCode(403); return await OrderDb.Deliver(db, auth, req, id, rider.Subject, rider.Subject); });
 app.MapGet("/reports/sales", async (DateTimeOffset? from, DateTimeOffset? to, string? status, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { if (!await auth.Allowed(req, "Staff", "Admin")) return Results.StatusCode(403); if (from is not null && to is not null && from >= to) return Results.BadRequest(new { message = "from must precede to." }); return Results.Ok(await OrderDb.Sales(db, from, to, status)); });
 app.MapGet("/reports/sales/export", async (DateTimeOffset? from, DateTimeOffset? to, string? status, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { if (!await auth.Allowed(req, "Staff", "Admin")) return Results.StatusCode(403); if (from is not null && to is not null && from >= to) return Results.BadRequest(new { message = "from must precede to." }); var report = await OrderDb.Sales(db, from, to, status); var csv = new StringBuilder("Order ID,Created At,Status,Subtotal,Delivery Fee,Total,Currency\n"); foreach (var row in report.Orders) csv.Append(row.Id).Append(',').Append(row.CreatedAt.ToString("O")).Append(',').Append(row.Status).Append(',').Append(row.Subtotal.ToString("0.00", CultureInfo.InvariantCulture)).Append(',').Append(row.DeliveryFee.ToString("0.00", CultureInfo.InvariantCulture)).Append(',').Append(row.Total.ToString("0.00", CultureInfo.InvariantCulture)).Append(',').Append(row.Currency).Append('\n'); return Results.File(Encoding.UTF8.GetBytes(csv.ToString()), "text/csv", "sales-report.csv"); });
+static IResult BankConfigResponse(BankConfig cfg) => cfg.IsConfigured
+    ? Results.Ok(new { bankName = cfg.BankName, accountName = cfg.AccountName, accountNumber = cfg.AccountNumber, branch = cfg.Branch })
+    : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
 app.Run();
 
 static async Task<IResult> CancelOrder(NpgsqlDataSource db, CatalogClient catalog, Guid id, Guid actor, string reason, bool staff, Guid correlation)
@@ -287,7 +277,14 @@ record AddressInput(string RecipientName, string Phone, string Line1, string? Li
 }
 record BasketLineInput(int Quantity); record CheckoutInput(Guid AddressId, string? PaymentMethod = null); record CheckoutRequest(Guid AddressId, string? PaymentMethod = null, string? ReceiptName = null, string? ReceiptContentType = null, string? ReceiptBase64 = null); record CancelInput(string Reason); record ReservationLine(Guid ProductId, int Quantity);
 record OrderActionInput(string? Reason, string? Notes); record AssignRiderInput(Guid RiderId); record PaymentRejectInput(string Reason);
-record BankConfig(string BankName, string AccountName, string AccountNumber, string Branch);
+record PaymentUpdateResult(bool PaymentExists, bool Updated, string? Message);
+record BankConfig(string? BankName, string? AccountName, string? AccountNumber, string? Branch)
+{
+    public bool IsConfigured => !string.IsNullOrWhiteSpace(BankName)
+        && !string.IsNullOrWhiteSpace(AccountName)
+        && !string.IsNullOrWhiteSpace(AccountNumber)
+        && !string.IsNullOrWhiteSpace(Branch);
+}
 record ReceiptStorageConfig(string BasePath);
 record PaymentRecord(Guid Id, Guid OrderId, string PaymentMethod, string PaymentStatus, string? ReceiptStorageKey, string? ReceiptOriginalName, string? ReceiptContentType, long ReceiptSize, DateTimeOffset? ReceiptUploadedAt, Guid? VerifiedBy, DateTimeOffset? VerifiedAt, Guid? RejectedBy, DateTimeOffset? RejectedAt, string? RejectionReason, DateTimeOffset CreatedAt);
 record ProductDto(Guid Id, string Sku, string Name, decimal Price, int StockQuantity, bool Active, string? ImageUrl);
@@ -299,13 +296,16 @@ record SalesRow(Guid Id, DateTimeOffset CreatedAt, string Status, decimal Subtot
 record SalesReport(int OrderCount, decimal RecognizedSales, decimal Tax, decimal DeliveryFee, DateTimeOffset GeneratedAt, List<SalesRow> Orders);
 static class CorrelationId { public static Guid From(HttpRequest request) => Guid.TryParse(request.Headers["X-Correlation-Id"].FirstOrDefault(), out var id) ? id : Guid.NewGuid(); }
 
-sealed class IdentityClient(HttpClient http)
+namespace Order.Api
 {
-    public async Task<Principal?> Customer(HttpRequest request) => await Principal(request, "Customer");
-    public async Task<bool> Allowed(HttpRequest request, params string[] roles) => await Principal(request, roles) is not null;
-    public async Task<JsonElement[]> AvailableRiders(HttpRequest request, string? zone) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return []; using var message = new HttpRequestMessage(HttpMethod.Get, $"/riders/available{(string.IsNullOrWhiteSpace(zone) ? "" : $"?zone={Uri.EscapeDataString(zone)}")}"); message.Headers.TryAddWithoutValidation("Authorization", token); try { var response = await http.SendAsync(message); if (!response.IsSuccessStatusCode) return []; return await response.Content.ReadFromJsonAsync<JsonElement[]>() ?? []; } catch { return []; } }
-    public async Task<bool> SetAvailability(HttpRequest request, Guid riderId, string status) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return false; using var message = new HttpRequestMessage(HttpMethod.Patch, $"/admin/users/{riderId}/availability") { Content = JsonContent.Create(new { availabilityStatus = status }) }; message.Headers.TryAddWithoutValidation("Authorization", token); try { return (await http.SendAsync(message)).IsSuccessStatusCode; } catch { return false; } }
-    public async Task<Principal?> Principal(HttpRequest request, params string[] roles) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return null; using var message = new HttpRequestMessage(HttpMethod.Get, "/auth/introspect"); message.Headers.TryAddWithoutValidation("Authorization", token); try { var result = await http.SendAsync(message); if (!result.IsSuccessStatusCode) return null; var root = JsonDocument.Parse(await result.Content.ReadAsStringAsync()).RootElement; if (!root.GetProperty("active").GetBoolean()) return null; var found = root.GetProperty("roles").EnumerateArray().Select(x => x.GetString()!).ToArray(); return roles.Any(found.Contains) ? new Principal(root.GetProperty("subject").GetGuid(), found) : null; } catch { return null; } }
+    sealed class IdentityClient(HttpClient http)
+    {
+        public async Task<global::Principal?> Customer(HttpRequest request) => await Principal(request, "Customer");
+        public async Task<bool> Allowed(HttpRequest request, params string[] roles) => await Principal(request, roles) is not null;
+        public async Task<JsonElement[]> AvailableRiders(HttpRequest request, string? zone) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return []; using var message = new HttpRequestMessage(HttpMethod.Get, $"/riders/available{(string.IsNullOrWhiteSpace(zone) ? "" : $"?zone={Uri.EscapeDataString(zone)}")}"); message.Headers.TryAddWithoutValidation("Authorization", token); try { var response = await http.SendAsync(message); if (!response.IsSuccessStatusCode) return []; return await response.Content.ReadFromJsonAsync<JsonElement[]>() ?? []; } catch { return []; } }
+        public async Task<bool> SetAvailability(HttpRequest request, Guid riderId, string status) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return false; using var message = new HttpRequestMessage(HttpMethod.Patch, $"/admin/users/{riderId}/availability") { Content = JsonContent.Create(new { availabilityStatus = status }) }; message.Headers.TryAddWithoutValidation("Authorization", token); try { return (await http.SendAsync(message)).IsSuccessStatusCode; } catch { return false; } }
+        public async Task<global::Principal?> Principal(HttpRequest request, params string[] roles) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return null; using var message = new HttpRequestMessage(HttpMethod.Get, "/auth/introspect"); message.Headers.TryAddWithoutValidation("Authorization", token); try { var result = await http.SendAsync(message); if (!result.IsSuccessStatusCode) return null; var root = JsonDocument.Parse(await result.Content.ReadAsStringAsync()).RootElement; if (!root.GetProperty("active").GetBoolean()) return null; var found = root.GetProperty("roles").EnumerateArray().Select(x => x.GetString()!).ToArray(); return roles.Any(found.Contains) ? new global::Principal(root.GetProperty("subject").GetGuid(), found) : null; } catch { return null; } }
+    }
 }
 sealed class CatalogClient(HttpClient http, IConfiguration config)
 {
@@ -451,59 +451,56 @@ static class OrderDb
             reader.GetFieldValue<DateTimeOffset>(14)
         );
     }
-    public static async Task<bool> UpdatePaymentStatus(
-        NpgsqlDataSource db, Guid orderId, string status, Guid actorId,
-        string? rejectionReason)
+    // All payment mutations lock the order before its payment row. Confirm, cancellation,
+    // and rejection also serialize on the order row, preventing an order from being confirmed
+    // while its payment is being rejected (or vice versa).
+    public static async Task<PaymentUpdateResult> UpdatePaymentStatus(NpgsqlDataSource db, Guid orderId, string status, Guid actorId, string? rejectionReason)
     {
-        if (status is not ("Verified" or "Rejected")) return false;
-        if (status == "Rejected" && string.IsNullOrWhiteSpace(rejectionReason)) return false;
-
         await using var conn = await db.OpenConnectionAsync();
         await using var tx = await conn.BeginTransactionAsync();
-
-        // Match the lock order used by Confirm: order row, then payment row.
-        await using (var order = new NpgsqlCommand(
-            "SELECT status FROM ordering.orders WHERE id=$1 FOR UPDATE", conn, tx))
+        await using (var order = new NpgsqlCommand("SELECT status FROM ordering.orders WHERE id=$1 FOR UPDATE", conn, tx))
         {
             order.Parameters.AddWithValue(orderId);
-            if (await order.ExecuteScalarAsync() is not string orderStatus ||
-                orderStatus != "Pending")
-                return false;
+            var orderStatus = await order.ExecuteScalarAsync();
+            if (orderStatus is null) return new(false, false, "Order was not found.");
+            if (orderStatus is not string currentOrderStatus || currentOrderStatus != "Pending")
+                return new(true, false, "Payment can only be changed while the order is pending.");
         }
 
-        // A conditional UPDATE prevents stale concurrent verification/rejection.
-        var sql = status == "Verified"
-            ? "UPDATE ordering.order_payments SET payment_status='Verified', " +
-              "verified_by=$2, verified_at=now(), updated_at=now() " +
-              "WHERE order_id=$1 AND payment_method='BankTransfer' " +
-              "AND payment_status='PendingVerification'"
-            : "UPDATE ordering.order_payments SET payment_status='Rejected', " +
-              "rejected_by=$2, rejected_at=now(), rejection_reason=$3, updated_at=now() " +
-              "WHERE order_id=$1 AND payment_method='BankTransfer' " +
-              "AND payment_status='PendingVerification'";
-
-        await using (var update = new NpgsqlCommand(sql, conn, tx))
+        string? method;
+        string? currentPaymentStatus;
+        await using (var payment = new NpgsqlCommand("SELECT payment_method,payment_status FROM ordering.order_payments WHERE order_id=$1 FOR UPDATE", conn, tx))
         {
-            update.Parameters.AddWithValue(orderId);
-            update.Parameters.AddWithValue(actorId);
-            if (status == "Rejected") update.Parameters.AddWithValue(rejectionReason!.Trim());
-            if (await update.ExecuteNonQueryAsync() != 1) return false;
+            payment.Parameters.AddWithValue(orderId);
+            await using var reader = await payment.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return new(false, false, "No payment record found for this order.");
+            method = reader.GetString(0);
+            currentPaymentStatus = reader.GetString(1);
         }
+        if (method != PaymentRules.BankTransfer) return new(true, false, "Only Bank Transfer payments can be verified or rejected.");
+        if (currentPaymentStatus != "PendingVerification") return new(true, false, currentPaymentStatus == "Verified" ? "Payment is already verified." : currentPaymentStatus == "Rejected" ? "Payment is already rejected." : "Payment cannot be changed in its current state.");
 
-        await using (var history = new NpgsqlCommand(
-            "INSERT INTO ordering.order_status_history(order_id,status,actor_id,reason) " +
-            "VALUES($1,$2,$3,$4)", conn, tx))
+        string sql = status switch
         {
-            history.Parameters.AddWithValue(orderId);
-            history.Parameters.AddWithValue(status == "Verified" ? "PaymentVerified" : "PaymentRejected");
-            history.Parameters.AddWithValue(actorId);
-            history.Parameters.AddWithValue(status == "Verified"
-                ? "Payment verified by staff" : rejectionReason!.Trim());
-            await history.ExecuteNonQueryAsync();
-        }
-
+            "Verified" => "UPDATE ordering.order_payments SET payment_status=$2, verified_by=$3, verified_at=now(), updated_at=now() WHERE order_id=$1 AND payment_status='PendingVerification'",
+            "Rejected" => "UPDATE ordering.order_payments SET payment_status=$2, rejected_by=$3, rejected_at=now(), rejection_reason=$4, updated_at=now() WHERE order_id=$1 AND payment_status='PendingVerification'",
+            _ => throw new ArgumentOutOfRangeException(nameof(status), "Unsupported payment status.")
+        };
+        await using var cmd = new NpgsqlCommand(sql, conn, tx);
+        cmd.Parameters.AddWithValue(orderId);
+        cmd.Parameters.AddWithValue(status);
+        cmd.Parameters.AddWithValue(actorId);
+        if (status == "Rejected") cmd.Parameters.AddWithValue((object?)rejectionReason ?? DBNull.Value);
+        var affected = await cmd.ExecuteNonQueryAsync();
+        if (affected == 0) return new(true, false, "Payment state changed; refresh and try again.");
+        await using var history = new NpgsqlCommand("INSERT INTO ordering.order_status_history(order_id,status,actor_id,reason) VALUES($1,$2,$3,$4)", conn, tx);
+        history.Parameters.AddWithValue(orderId);
+        history.Parameters.AddWithValue(status == "Verified" ? "PaymentVerified" : "PaymentRejected");
+        history.Parameters.AddWithValue(actorId);
+        history.Parameters.AddWithValue(rejectionReason ?? (status == "Verified" ? "Payment verified by staff" : "Payment rejected by staff"));
+        await history.ExecuteNonQueryAsync();
         await tx.CommitAsync();
-        return true;
+        return new(true, true, null);
     }
     public static async Task<List<object>> StaffOrders(NpgsqlDataSource db) { await using var cmd = db.CreateCommand("SELECT o.id,o.customer_id,o.status,o.total,o.created_at,o.reservation_id,(SELECT count(*) FROM ordering.order_items i WHERE i.order_id=o.id),o.assigned_rider_id,COALESCE(p.payment_method,'CashOnDelivery'),COALESCE(p.payment_status,'NotRequired'),p.receipt_original_name,p.receipt_uploaded_at,p.rejection_reason FROM ordering.orders o LEFT JOIN ordering.order_payments p ON p.order_id=o.id ORDER BY o.created_at DESC"); await using var reader = await cmd.ExecuteReaderAsync(); var rows = new List<object>(); while (await reader.ReadAsync()) { var currentStatus = reader.GetString(2); var reservationStatus = currentStatus switch { "Confirmed" => "Reserved", "Cancelled" => "Released", "Rejected" => "Failed", _ => currentStatus }; var assignedRiderId = reader.IsDBNull(7) ? (Guid?)null : reader.GetGuid(7); var deliveryStatus = currentStatus == "Delivered" ? "Delivered" : currentStatus == "Delivery" ? "In delivery" : assignedRiderId is not null ? "Rider assigned" : "Not assigned"; rows.Add(new { id = reader.GetGuid(0), customerId = reader.GetGuid(1), status = currentStatus, total = reader.GetDecimal(3), createdAt = reader.GetFieldValue<DateTimeOffset>(4), reservationId = reader.IsDBNull(5) ? (Guid?)null : reader.GetGuid(5), reservationStatus, itemCount = reader.GetInt64(6), assignedRiderId, deliveryStatus, paymentMethod = reader.GetString(8), paymentStatus = reader.GetString(9), receiptFileName = reader.IsDBNull(10) ? null : reader.GetString(10), receiptUploadedAt = reader.IsDBNull(11) ? (DateTimeOffset?)null : reader.GetFieldValue<DateTimeOffset>(11), rejectionReason = reader.IsDBNull(12) ? null : reader.GetString(12) }); } return rows; }
     public static async Task<IResult> Confirm(NpgsqlDataSource db, Guid id, Guid actor, string? notes)
@@ -511,62 +508,40 @@ static class OrderDb
         await using var conn = await db.OpenConnectionAsync();
         await using var tx = await conn.BeginTransactionAsync();
 
-        // Always lock the order before its payment row. Payment verification and
-        // rejection take locks in this same order, preventing a status race.
-        await using (var order = new NpgsqlCommand(
-            "SELECT status FROM ordering.orders WHERE id=$1 FOR UPDATE", conn, tx))
+        // Lock order first, then payment: the same ordering used by UpdatePaymentStatus.
+        await using (var order = new NpgsqlCommand("SELECT status FROM ordering.orders WHERE id=$1 FOR UPDATE", conn, tx))
         {
             order.Parameters.AddWithValue(id);
             var status = await order.ExecuteScalarAsync();
-            if (status is null)
-                return Results.NotFound(new { message = "Order not found." });
-            if (status is not string state || state != "Pending")
-                return Results.Conflict(new { message = "Only pending orders can be confirmed." });
+            if (status is null) return Results.NotFound();
+            if (status is not string currentStatus || currentStatus != "Pending") return Results.Conflict(new { message = "Only pending orders can be confirmed." });
         }
 
-        string method;
+        string paymentMethod;
         string paymentStatus;
-        await using (var payment = new NpgsqlCommand(
-            "SELECT payment_method, payment_status FROM ordering.order_payments " +
-            "WHERE order_id=$1 FOR UPDATE", conn, tx))
+        await using (var payment = new NpgsqlCommand("SELECT payment_method,payment_status FROM ordering.order_payments WHERE order_id=$1 FOR UPDATE", conn, tx))
         {
             payment.Parameters.AddWithValue(id);
             await using var reader = await payment.ExecuteReaderAsync();
-            if (!await reader.ReadAsync())
-                return Results.Conflict(new { message = "Payment record is missing. Order cannot be confirmed." });
-            method = reader.GetString(0);
+            if (!await reader.ReadAsync()) return Results.Conflict(new { message = "An order cannot be confirmed without a payment record." });
+            paymentMethod = reader.GetString(0);
             paymentStatus = reader.GetString(1);
         }
+        if (!PaymentRules.CanConfirmOrder(paymentMethod, paymentStatus)) return Results.Conflict(new { message = "Bank Transfer orders can only be confirmed after payment is verified." });
 
-        // Explicitly reject unknown methods and inconsistent COD payment states.
-        if (method != "CashOnDelivery" && method != "BankTransfer")
-            return Results.Conflict(new { message = "Unsupported payment method." });
-        if ((method == "CashOnDelivery" && paymentStatus != "NotRequired") ||
-            !PaymentRules.CanConfirmOrder(method, paymentStatus))
-            return Results.Conflict(new { message = "Payment is not eligible for confirmation." });
-
-        await using (var update = new NpgsqlCommand(
-            "UPDATE ordering.orders SET status='Confirmed', updated_at=now(), " +
-            "confirmed_by_user_id=$2, confirmed_at=now() " +
-            "WHERE id=$1 AND status='Pending'", conn, tx))
+        await using (var update = new NpgsqlCommand("UPDATE ordering.orders SET status='Confirmed',confirmed_by_user_id=$2,confirmed_at=now(),updated_at=now() WHERE id=$1 AND status='Pending'", conn, tx))
         {
             update.Parameters.AddWithValue(id);
             update.Parameters.AddWithValue(actor);
-            if (await update.ExecuteNonQueryAsync() != 1)
-                return Results.Conflict(new { message = "Order state changed; refresh and try again." });
+            if (await update.ExecuteNonQueryAsync() != 1) return Results.Conflict(new { message = "Order state changed; refresh and try again." });
         }
-
-        await using (var history = new NpgsqlCommand(
-            "INSERT INTO ordering.order_status_history(order_id,status,actor_id,reason) " +
-            "VALUES($1,'Confirmed',$2,$3)", conn, tx))
+        await using (var history = new NpgsqlCommand("INSERT INTO ordering.order_status_history(order_id,status,actor_id,reason) VALUES($1,'Confirmed',$2,$3)", conn, tx))
         {
             history.Parameters.AddWithValue(id);
             history.Parameters.AddWithValue(actor);
-            history.Parameters.AddWithValue(string.IsNullOrWhiteSpace(notes)
-                ? "Confirmed by operations" : notes.Trim());
+            history.Parameters.AddWithValue(notes?.Trim() ?? "Confirmed by operations");
             await history.ExecuteNonQueryAsync();
         }
-
         await tx.CommitAsync();
         return Results.Ok(new { id, status = "Confirmed" });
     }
