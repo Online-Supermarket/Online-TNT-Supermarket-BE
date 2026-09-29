@@ -1,6 +1,8 @@
 # Sprint 1 and 2 API contract
 
-All bodies use JSON. Browser requests use the gateway paths `http://localhost:8080/api/{identity|catalog|order}` in the local Compose environment. Protected requests need `Authorization: Bearer <accessToken>`. Catalog and Order call Identity introspection before authorizing a protected request; a revoked, expired, malformed or insufficient-role token is denied.
+All bodies use JSON. Browser requests use the gateway paths `http://localhost:8080/api/{identity|catalog|order|reporting}` in the local Compose environment. Protected requests need `Authorization: Bearer <accessToken>`. Catalog, Order and Reporting call Identity introspection before authorizing a protected request; a revoked, expired, malformed or insufficient-role token is denied.
+
+Access tokens are HS256 JWTs whose `role` claim contains the normalized roles used by authorization. `OperationsAdmin` has admin and staff access; `Staff` has operational access. Legacy `CatalogStaff` and `InventoryStaff` values are normalized to `Staff` for old records/tokens. After a role migration or role change, users should log out and log in again to receive a JWT with the current `role` claim.
 
 | Service | Operation | Access | Result |
 | --- | --- | --- | --- |
@@ -9,7 +11,7 @@ All bodies use JSON. Browser requests use the gateway paths `http://localhost:80
 | Identity | `POST /auth/logout` | Authenticated | Revokes the current token; returns 204. |
 | Identity | `GET /auth/introspect` | Internal bearer request | Returns `active`, identity and roles. |
 | Identity | `GET /users/me` | Authenticated | Returns active user identity and roles. |
-| Identity | `GET /admin/users`, `POST /admin/users`, `PUT /admin/users/{id}/roles` | Operations Admin | Lists staff/customer accounts, creates staff/courier accounts, and changes roles. Public registration always creates Customer only. |
+| Identity | `GET /admin/users?role=Rider`, `GET/PUT /admin/users/{id}`, `POST /admin/users` | Operations Admin | Lists and manages accounts. Rider responses include personal, availability, and vehicle details. A rider update atomically upserts `identity.rider_profiles`; duplicate vehicle/license numbers return 409. Public registration always creates Customer only. |
 | Catalog | `GET /categories` | Public | Active catalog categories. |
 | Catalog | `GET /products?q=&categoryId=&page=&pageSize=` | Public | Active products only. Search matches SKU or name case-insensitively. Page size is 1–100. |
 | Catalog | `GET /products/{id}` | Public | Active product detail; inactive/missing products return 404. |

@@ -17,5 +17,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../services/order/Order.Api/Order.Api.csproj" />
+    <ProjectReference Include="../../services/reporting/Reporting.Api/Reporting.Api.csproj" />
+    <ProjectReference Include="../../services/identity/Identity.Api/Identity.Api.csproj" />
   </ItemGroup>
 </Project>

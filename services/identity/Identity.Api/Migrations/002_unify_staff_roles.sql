@@ -11,3 +11,7 @@ SET roles = ARRAY(
   FROM unnest(roles) AS r
 )
 WHERE 'CatalogStaff' = ANY(roles) OR 'InventoryStaff' = ANY(roles);
+
+-- Verification query for deployment runbooks (must return no legacy values):
+-- SELECT id, email, roles FROM identity.users
+-- WHERE 'CatalogStaff' = ANY(roles) OR 'InventoryStaff' = ANY(roles);

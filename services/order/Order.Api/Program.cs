@@ -16,10 +16,10 @@ builder.Services.AddSingleton<RequestMetrics>();
 builder.Services.AddHostedService<OutboxPublisher>();
 builder.Services.AddHostedService<PendingOrderReconciler>();
 builder.Services.AddSingleton(_ => new BankConfig(
-    builder.Configuration["BankTransfer:BankName"],
-    builder.Configuration["BankTransfer:AccountName"],
-    builder.Configuration["BankTransfer:AccountNumber"],
-    builder.Configuration["BankTransfer:Branch"]
+    builder.Configuration["BankTransfer:BankName"] ?? "Bank of Ceylon",
+    builder.Configuration["BankTransfer:AccountName"] ?? "TNT Supermarket",
+    builder.Configuration["BankTransfer:AccountNumber"] ?? "0012345678",
+    builder.Configuration["BankTransfer:Branch"] ?? "Colombo Main Branch"
 ));
 builder.Services.AddSingleton(_ => new ReceiptStorageConfig(
     builder.Configuration["BankTransfer:ReceiptStoragePath"] ?? Path.Combine(AppContext.BaseDirectory, "receipts")
@@ -97,7 +97,6 @@ app.MapPost("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSo
 
     if (paymentMethod == "BankTransfer" && !bankConfig.IsConfigured)
         return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-
     // Validate receipt for BankTransfer
     string? receiptStorageKey = null; string? receiptOriginalName = null; string? receiptContentType = null; long receiptSize = 0;
     if (paymentMethod == "BankTransfer")
@@ -250,7 +249,6 @@ app.MapGet("/reports/sales/export", async (DateTimeOffset? from, DateTimeOffset?
 static IResult BankConfigResponse(BankConfig cfg) => cfg.IsConfigured
     ? Results.Ok(new { bankName = cfg.BankName, accountName = cfg.AccountName, accountNumber = cfg.AccountNumber, branch = cfg.Branch })
     : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-
 app.Run();
 
 static async Task<IResult> CancelOrder(NpgsqlDataSource db, CatalogClient catalog, Guid id, Guid actor, string reason, bool staff, Guid correlation)
@@ -298,13 +296,16 @@ record SalesRow(Guid Id, DateTimeOffset CreatedAt, string Status, decimal Subtot
 record SalesReport(int OrderCount, decimal RecognizedSales, decimal Tax, decimal DeliveryFee, DateTimeOffset GeneratedAt, List<SalesRow> Orders);
 static class CorrelationId { public static Guid From(HttpRequest request) => Guid.TryParse(request.Headers["X-Correlation-Id"].FirstOrDefault(), out var id) ? id : Guid.NewGuid(); }
 
-sealed class IdentityClient(HttpClient http)
+namespace Order.Api
 {
-    public async Task<Principal?> Customer(HttpRequest request) => await Principal(request, "Customer");
-    public async Task<bool> Allowed(HttpRequest request, params string[] roles) => await Principal(request, roles) is not null;
-    public async Task<JsonElement[]> AvailableRiders(HttpRequest request, string? zone) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return []; using var message = new HttpRequestMessage(HttpMethod.Get, $"/riders/available{(string.IsNullOrWhiteSpace(zone) ? "" : $"?zone={Uri.EscapeDataString(zone)}")}"); message.Headers.TryAddWithoutValidation("Authorization", token); try { var response = await http.SendAsync(message); if (!response.IsSuccessStatusCode) return []; return await response.Content.ReadFromJsonAsync<JsonElement[]>() ?? []; } catch { return []; } }
-    public async Task<bool> SetAvailability(HttpRequest request, Guid riderId, string status) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return false; using var message = new HttpRequestMessage(HttpMethod.Patch, $"/admin/users/{riderId}/availability") { Content = JsonContent.Create(new { availabilityStatus = status }) }; message.Headers.TryAddWithoutValidation("Authorization", token); try { return (await http.SendAsync(message)).IsSuccessStatusCode; } catch { return false; } }
-    public async Task<Principal?> Principal(HttpRequest request, params string[] roles) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return null; using var message = new HttpRequestMessage(HttpMethod.Get, "/auth/introspect"); message.Headers.TryAddWithoutValidation("Authorization", token); try { var result = await http.SendAsync(message); if (!result.IsSuccessStatusCode) return null; var root = JsonDocument.Parse(await result.Content.ReadAsStringAsync()).RootElement; if (!root.GetProperty("active").GetBoolean()) return null; var found = root.GetProperty("roles").EnumerateArray().Select(x => x.GetString()!).ToArray(); return roles.Any(found.Contains) ? new Principal(root.GetProperty("subject").GetGuid(), found) : null; } catch { return null; } }
+    sealed class IdentityClient(HttpClient http)
+    {
+        public async Task<global::Principal?> Customer(HttpRequest request) => await Principal(request, "Customer");
+        public async Task<bool> Allowed(HttpRequest request, params string[] roles) => await Principal(request, roles) is not null;
+        public async Task<JsonElement[]> AvailableRiders(HttpRequest request, string? zone) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return []; using var message = new HttpRequestMessage(HttpMethod.Get, $"/riders/available{(string.IsNullOrWhiteSpace(zone) ? "" : $"?zone={Uri.EscapeDataString(zone)}")}"); message.Headers.TryAddWithoutValidation("Authorization", token); try { var response = await http.SendAsync(message); if (!response.IsSuccessStatusCode) return []; return await response.Content.ReadFromJsonAsync<JsonElement[]>() ?? []; } catch { return []; } }
+        public async Task<bool> SetAvailability(HttpRequest request, Guid riderId, string status) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return false; using var message = new HttpRequestMessage(HttpMethod.Patch, $"/admin/users/{riderId}/availability") { Content = JsonContent.Create(new { availabilityStatus = status }) }; message.Headers.TryAddWithoutValidation("Authorization", token); try { return (await http.SendAsync(message)).IsSuccessStatusCode; } catch { return false; } }
+        public async Task<global::Principal?> Principal(HttpRequest request, params string[] roles) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return null; using var message = new HttpRequestMessage(HttpMethod.Get, "/auth/introspect"); message.Headers.TryAddWithoutValidation("Authorization", token); try { var result = await http.SendAsync(message); if (!result.IsSuccessStatusCode) return null; var root = JsonDocument.Parse(await result.Content.ReadAsStringAsync()).RootElement; if (!root.GetProperty("active").GetBoolean()) return null; var found = root.GetProperty("roles").EnumerateArray().Select(x => x.GetString()!).ToArray(); return roles.Any(found.Contains) ? new global::Principal(root.GetProperty("subject").GetGuid(), found) : null; } catch { return null; } }
+    }
 }
 sealed class CatalogClient(HttpClient http, IConfiguration config)
 {
