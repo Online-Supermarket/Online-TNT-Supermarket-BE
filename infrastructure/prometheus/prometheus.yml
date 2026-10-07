@@ -5,4 +5,4 @@ rule_files:
 scrape_configs:
   - job_name: marketflow
     static_configs:
-      - targets: ["identity-api:8080", "catalog-api:8080", "order-api:8080"]
+      - targets: ["identity-api:8080", "catalog-api:8080", "order-api:8080", "reporting-api:8080"]

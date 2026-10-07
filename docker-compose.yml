@@ -31,6 +31,14 @@ services:
       interval: 10s
       timeout: 10s
       retries: 15
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    environment:
+      KAFKA_CLUSTERS_0_NAME: marketflow-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    ports: ["8085:8080"]
+    depends_on:
+      kafka: { condition: service_healthy }
   identity-api:
     build: ./services/identity/Identity.Api
     environment:

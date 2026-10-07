@@ -1,10 +1,300 @@
 {
-  "annotations": {"list": []}, "editable": true, "panels": [
-    {"type":"stat", "title":"HTTP requests", "targets":[{"expr":"sum(marketflow_http_requests_total)"}], "gridPos":{"h":8,"w":12,"x":0,"y":0}},
-    {"type":"timeseries", "title":"Requests by service", "targets":[{"expr":"sum by (service) (rate(marketflow_http_requests_total[5m]))"}], "gridPos":{"h":8,"w":12,"x":12,"y":0}},
-    {"type":"timeseries", "title":"HTTP error rate", "targets":[{"expr":"sum by (service) (rate(marketflow_http_errors_total[5m]))"}], "gridPos":{"h":8,"w":12,"x":0,"y":8}},
-    {"type":"timeseries", "title":"Average request duration", "targets":[{"expr":"sum by (service) (rate(marketflow_http_request_duration_seconds_sum[5m])) / sum by (service) (rate(marketflow_http_request_duration_seconds_count[5m]))"}], "gridPos":{"h":8,"w":12,"x":12,"y":8}},
-    {"type":"timeseries", "title":"Unpublished outbox events", "targets":[{"expr":"marketflow_outbox_pending"}], "gridPos":{"h":8,"w":12,"x":0,"y":16}},
-    {"type":"timeseries", "title":"Reservation exceptions", "targets":[{"expr":"marketflow_pending_reservations or marketflow_failed_reservations_total"}], "gridPos":{"h":8,"w":12,"x":12,"y":16}}
-  ], "schemaVersion":39, "title":"Marketflow Sprint 01–02", "version":3
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Identity Service",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "max(up{instance=\"identity-api:8080\"})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } },
+            { "type": "special", "options": { "match": "null", "result": { "text": "NO DATA" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Catalog Service",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "expr": "max(up{instance=\"catalog-api:8080\"})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } },
+            { "type": "special", "options": { "match": "null", "result": { "text": "NO DATA" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Order Service",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "max(up{instance=\"order-api:8080\"})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } },
+            { "type": "special", "options": { "match": "null", "result": { "text": "NO DATA" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Reporting Service",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        {
+          "expr": "max(up{instance=\"reporting-api:8080\"})",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } },
+            { "type": "special", "options": { "match": "null", "result": { "text": "NOT YET" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "orange", "value": null },
+              { "color": "red", "value": 0 },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Identity — Request Rate",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 5 },
+      "targets": [
+        {
+          "expr": "sum(rate(marketflow_http_requests_total{service=~\".*identity.*\"}[5m]))",
+          "legendFormat": "Identity",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Catalog — Request Rate",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 5 },
+      "targets": [
+        {
+          "expr": "sum(rate(marketflow_http_requests_total{service=~\".*catalog.*\"}[5m]))",
+          "legendFormat": "Catalog",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Order — Request Rate",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 5 },
+      "targets": [
+        {
+          "expr": "sum(rate(marketflow_http_requests_total{service=~\".*order.*\"}[5m]))",
+          "legendFormat": "Order",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Identity — 5xx Error Rate",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 13 },
+      "targets": [
+        {
+          "expr": "sum(rate(marketflow_http_errors_total{service=~\".*identity.*\"}[5m]))",
+          "legendFormat": "Identity",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Catalog — 5xx Error Rate",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 13 },
+      "targets": [
+        {
+          "expr": "sum(rate(marketflow_http_errors_total{service=~\".*catalog.*\"}[5m]))",
+          "legendFormat": "Catalog",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Order — 5xx Error Rate",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 13 },
+      "targets": [
+        {
+          "expr": "sum(rate(marketflow_http_errors_total{service=~\".*order.*\"}[5m]))",
+          "legendFormat": "Order",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Average Request Duration (seconds)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+      "targets": [
+        {
+          "expr": "sum by (service) (rate(marketflow_http_request_duration_seconds_sum[5m])) / clamp_min(sum by (service) (rate(marketflow_http_request_duration_seconds_count[5m])), 0.0001)",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Unpublished Outbox and Reservation Exceptions",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
+      "targets": [
+        {
+          "expr": "marketflow_outbox_pending",
+          "legendFormat": "Outbox pending",
+          "refId": "A"
+        },
+        {
+          "expr": "marketflow_pending_reservations",
+          "legendFormat": "Pending reservations",
+          "refId": "B"
+        },
+        {
+          "expr": "marketflow_failed_reservations_total",
+          "legendFormat": "Failed reservations",
+          "refId": "C"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["marketflow", "services", "overview"],
+  "templating": { "list": [] },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Marketflow — Overview",
+  "version": 4,
+  "weekStart": ""
 }
