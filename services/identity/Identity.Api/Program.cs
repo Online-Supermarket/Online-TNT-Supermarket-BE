@@ -83,7 +83,22 @@ app.MapGet("/auth/introspect", async (HttpRequest request, NpgsqlDataSource db, 
     await using var cmd = db.CreateCommand("SELECT u.email,u.display_name,u.roles FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.active=true"); cmd.Parameters.AddWithValue(TokenService.Hash(token)); await using var reader = await cmd.ExecuteReaderAsync();
     return await reader.ReadAsync() ? Results.Ok(new { active = true, subject = payload.Subject, email = reader.GetString(0), displayName = reader.GetString(1), roles = IdentityRoles.NormalizeAll(reader.GetFieldValue<string[]>(2)), expiresAt = payload.ExpiresAt }) : Results.Ok(new { active = false });
 });
-app.MapGet("/users/me", async (HttpRequest request, NpgsqlDataSource db, TokenService tokens) => { var token = TokenService.GetBearer(request); if (token is null || !tokens.TryRead(token, out var payload)) return Results.StatusCode(401); await using var cmd = db.CreateCommand("SELECT u.email,u.display_name,u.roles,u.full_name,u.contact_number,u.district,u.address FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.active=true"); cmd.Parameters.AddWithValue(TokenService.Hash(token)); await using var r = await cmd.ExecuteReaderAsync(); return await r.ReadAsync() ? Results.Ok(new { id = payload.Subject, email = r.GetString(0), displayName = r.GetString(1), roles = IdentityRoles.NormalizeAll(r.GetFieldValue<string[]>(2)), fullName = r.IsDBNull(3) ? null : r.GetString(3), contactNumber = r.IsDBNull(4) ? null : r.GetString(4), district = r.IsDBNull(5) ? null : r.GetString(5), address = r.IsDBNull(6) ? null : r.GetString(6) }) : Results.StatusCode(401); });
+app.MapGet("/users/me", async (HttpRequest request, NpgsqlDataSource db, TokenService tokens) => { var token = TokenService.GetBearer(request); if (token is null || !tokens.TryRead(token, out var payload)) return Results.StatusCode(401); await using var cmd = db.CreateCommand("SELECT u.email,u.display_name,u.roles,u.full_name,u.contact_number,u.district,u.address, rp.vehicle_type, rp.license_number, rp.vehicle_number FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN rider_profiles rp ON rp.user_id=u.id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.active=true"); cmd.Parameters.AddWithValue(TokenService.Hash(token)); await using var r = await cmd.ExecuteReaderAsync(); return await r.ReadAsync() ? Results.Ok(new { id = payload.Subject, email = r.GetString(0), displayName = r.GetString(1), roles = IdentityRoles.NormalizeAll(r.GetFieldValue<string[]>(2)), fullName = r.IsDBNull(3) ? null : r.GetString(3), contactNumber = r.IsDBNull(4) ? null : r.GetString(4), district = r.IsDBNull(5) ? null : r.GetString(5), address = r.IsDBNull(6) ? null : r.GetString(6), vehicleType = r.IsDBNull(7) ? null : r.GetString(7), licenseNumber = r.IsDBNull(8) ? null : r.GetString(8), vehicleNumber = r.IsDBNull(9) ? null : r.GetString(9) }) : Results.StatusCode(401); });
+app.MapPut("/users/me", async (ProfileUpdateRequest req, HttpRequest request, NpgsqlDataSource db, TokenService tokens) => {
+    var token = TokenService.GetBearer(request); if (token is null || !tokens.TryRead(token, out var payload)) return Results.StatusCode(401);
+    await using var conn = await db.OpenConnectionAsync(); await using var tx = await conn.BeginTransactionAsync();
+    try {
+        await using var cmd = new NpgsqlCommand("UPDATE users SET contact_number=$1, address=$2, district=$3 WHERE id=$4", conn, tx);
+        cmd.Parameters.AddWithValue(req.ContactNumber ?? (object)DBNull.Value); cmd.Parameters.AddWithValue(req.Address ?? (object)DBNull.Value); cmd.Parameters.AddWithValue(req.District ?? (object)DBNull.Value); cmd.Parameters.AddWithValue(payload.Subject);
+        await cmd.ExecuteNonQueryAsync();
+        if (!string.IsNullOrWhiteSpace(req.VehicleType) || !string.IsNullOrWhiteSpace(req.VehicleNumber) || !string.IsNullOrWhiteSpace(req.LicenseNumber)) {
+            await using var profCmd = new NpgsqlCommand(@"INSERT INTO rider_profiles(user_id,vehicle_type,vehicle_number,license_number) VALUES($1,$2,$3,$4) ON CONFLICT(user_id) DO UPDATE SET vehicle_type=$2, vehicle_number=$3, license_number=$4", conn, tx);
+            profCmd.Parameters.AddWithValue(payload.Subject); profCmd.Parameters.AddWithValue(req.VehicleType ?? (object)DBNull.Value); profCmd.Parameters.AddWithValue(req.VehicleNumber ?? (object)DBNull.Value); profCmd.Parameters.AddWithValue(req.LicenseNumber ?? (object)DBNull.Value);
+            await profCmd.ExecuteNonQueryAsync();
+        }
+        await tx.CommitAsync(); return Results.Ok();
+    } catch { await tx.RollbackAsync(); return Results.StatusCode(500); }
+});
 // Operational staff may look up the limited customer/rider contact data needed to fulfil an order.
 // Administration remains restricted to /admin/users; credentials and administrative fields are never exposed here.
 app.MapGet("/users", async (HttpRequest request, NpgsqlDataSource db, TokenService tokens) =>
@@ -411,6 +426,7 @@ record AdminUserRequest(string Email, string DisplayName, string Password, strin
         return errors;
     }
 }
+record ProfileUpdateRequest(string? ContactNumber, string? Address, string? District, string? VehicleType, string? VehicleNumber, string? LicenseNumber);
 record AdminUserUpdateRequest(string? FullName, string? Email, string? ContactNumber, string? AssignedStore, bool? Active, string? AvailabilityStatus, string[]? Roles = null, string? VehicleType = null, string? VehicleNumber = null, string? LicenseNumber = null, string? District = null, string? Address = null, string? VehicleModel = null)
 {
     public bool HasVehicleFields => VehicleType is not null || VehicleModel is not null || VehicleNumber is not null || LicenseNumber is not null;
