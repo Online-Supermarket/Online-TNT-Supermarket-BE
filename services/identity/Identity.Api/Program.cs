@@ -22,6 +22,17 @@ app.MapGet("/health/ready", async (NpgsqlDataSource db) =>
 app.MapGet("/metrics", (RequestMetrics m) => Results.Text(m.AsPrometheus("identity"), "text/plain"));
 app.MapGet("/openapi/v1.json", () => Results.Text(OpenApi.Document("MarketFlow Identity API", new("get", "/health", "Liveness check"), new("get", "/health/ready", "Dependency readiness check"), new("post", "/auth/login", "Sign in"), new("post", "/auth/register", "Register a customer"), new("post", "/auth/logout", "Revoke the current session"), new("get", "/auth/introspect", "Inspect the current token"), new("get", "/users/me", "Read the current account"), new("get", "/admin/users", "List accounts"), new("post", "/admin/users", "Create a staff account")), "application/json"));
 app.MapGet("/swagger", () => Results.Content(OpenApi.Ui, "text/html"));
+app.MapGet("/riders/{id:guid}", async (Guid id, NpgsqlDataSource db) => {
+    await using var cmd = db.CreateCommand("SELECT u.full_name, u.display_name, u.contact_number, p.vehicle_type, p.vehicle_number FROM users u LEFT JOIN rider_profiles p ON p.user_id = u.id WHERE u.id = $1 AND 'Rider' = ANY(u.roles)");
+    cmd.Parameters.AddWithValue(id);
+    await using var r = await cmd.ExecuteReaderAsync();
+    return await r.ReadAsync() ? Results.Ok(new {
+        name = r.IsDBNull(0) ? r.GetString(1) : r.GetString(0),
+        contactNumber = r.IsDBNull(2) ? null : r.GetString(2),
+        vehicleType = r.IsDBNull(3) ? null : r.GetString(3),
+        vehicleNumber = r.IsDBNull(4) ? null : r.GetString(4)
+    }) : Results.NotFound();
+});
 
 app.MapGet("/riders/available", async (string? zone, HttpRequest request, NpgsqlDataSource db, TokenService tokens) =>
 {
