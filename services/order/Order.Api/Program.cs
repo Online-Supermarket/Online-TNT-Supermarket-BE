@@ -12,6 +12,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(builder.Configuration.GetConnectionString("Order") ?? "Host=localhost;Port=5432;Database=marketflow;Username=marketflow;Password=marketflow;Search Path=ordering"));
 builder.Services.AddHttpClient<IdentityClient>(c => c.BaseAddress = new Uri(builder.Configuration["Services:IdentityUrl"] ?? "http://localhost:8081"));
 builder.Services.AddHttpClient<CatalogClient>(c => c.BaseAddress = new Uri(builder.Configuration["Services:CatalogUrl"] ?? "http://localhost:8082"));
+builder.Services.AddTransient<ICatalogClient>(sp => sp.GetRequiredService<CatalogClient>());
+builder.Services.AddScoped<IOrderValidationService, OrderValidationService>();
 builder.Services.AddSingleton<RequestMetrics>();
 builder.Services.AddHostedService<OutboxPublisher>();
 builder.Services.AddHostedService<PendingOrderReconciler>();
@@ -46,7 +48,7 @@ app.MapPost("/addresses", async (AddressInput input, HttpRequest req, IdentityCl
 app.MapPut("/addresses/{id:guid}", async (Guid id, AddressInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var user = await auth.Customer(req); if (user is null) return Results.Unauthorized(); var errors = AddressInput.Validate(input); if (errors.Count > 0) return Results.ValidationProblem(errors); return await OrderDb.SaveAddress(db, user.Subject, id, input) == Guid.Empty ? Results.NotFound() : Results.NoContent(); });
 app.MapDelete("/addresses/{id:guid}", async (Guid id, HttpRequest req, IdentityClient auth, NpgsqlDataSource db) => { var user = await auth.Customer(req); if (user is null) return Results.Unauthorized(); return await OrderDb.DeleteAddress(db, user.Subject, id) ? Results.NoContent() : Results.NotFound(); });
 app.MapGet("/basket", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var user = await auth.Customer(req); return user is null ? Results.Unauthorized() : Results.Ok(await OrderDb.Basket(db, user.Subject, catalog)); });
-app.MapPut("/basket/items/{productId:guid}", async (Guid productId, BasketLineInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var user = await auth.Customer(req); if (user is null) return Results.Unauthorized(); if (input.Quantity <= 0) return Results.ValidationProblem(new Dictionary<string, string[]> { ["quantity"] = ["Quantity must be positive."] }); var product = await catalog.Product(productId); if (product is null || !product.Active) return Results.BadRequest(new { message = "Product is not available." }); if (input.Quantity > product.StockQuantity) return Results.Conflict(new { message = $"Only {product.StockQuantity} items are available in stock." }); await OrderDb.SetBasketLine(db, user.Subject, productId, input.Quantity); return Results.Ok(await OrderDb.Basket(db, user.Subject, catalog)); });
+app.MapPut("/basket/items/{productId:guid}", async (Guid productId, BasketLineInput input, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog, IOrderValidationService validator) => { var user = await auth.Customer(req); if (user is null) return Results.Unauthorized(); if (input.Quantity <= 0) return Results.ValidationProblem(new Dictionary<string, string[]> { ["quantity"] = ["Quantity must be positive."] }); var validation = await validator.ValidateBasketItemAsync(productId, input.Quantity); if (validation.Status == BasketValidationStatus.ProductNotFound || validation.Status == BasketValidationStatus.ProductInactive) return Results.BadRequest(new { message = validation.Message ?? "Product is not available." }); if (validation.Status == BasketValidationStatus.InsufficientStock) return Results.Conflict(new { message = validation.Message }); await OrderDb.SetBasketLine(db, user.Subject, productId, input.Quantity); return Results.Ok(await OrderDb.Basket(db, user.Subject, catalog)); });
 app.MapDelete("/basket/items/{productId:guid}", async (Guid productId, HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog) => { var user = await auth.Customer(req); if (user is null) return Results.Unauthorized(); await OrderDb.RemoveBasketLine(db, user.Subject, productId); return Results.Ok(await OrderDb.Basket(db, user.Subject, catalog)); });
 app.MapPost("/orders", async (HttpRequest req, IdentityClient auth, NpgsqlDataSource db, CatalogClient catalog, ReceiptStorageConfig storageConfig, BankConfig bankConfig, ILogger<Program> log) =>
 {
@@ -276,7 +278,7 @@ record AddressInput(string RecipientName, string Phone, string Line1, string? Li
 {
     public static Dictionary<string, string[]> Validate(AddressInput x) { var errors = new Dictionary<string, string[]>(); if (string.IsNullOrWhiteSpace(x.RecipientName) || string.IsNullOrWhiteSpace(x.Phone) || string.IsNullOrWhiteSpace(x.Line1) || string.IsNullOrWhiteSpace(x.City) || string.IsNullOrWhiteSpace(x.Zone)) errors["address"] = ["Recipient, phone, line 1, city and zone are required."]; return errors; }
 }
-record BasketLineInput(int Quantity); record CheckoutInput(Guid AddressId, string? PaymentMethod = null); record CheckoutRequest(Guid AddressId, string? PaymentMethod = null, string? ReceiptName = null, string? ReceiptContentType = null, string? ReceiptBase64 = null); record CancelInput(string Reason); record ReservationLine(Guid ProductId, int Quantity);
+record BasketLineInput(int Quantity); record CheckoutInput(Guid AddressId, string? PaymentMethod = null); record CheckoutRequest(Guid AddressId, string? PaymentMethod = null, string? ReceiptName = null, string? ReceiptContentType = null, string? ReceiptBase64 = null); record CancelInput(string Reason); public record ReservationLine(Guid ProductId, int Quantity);
 record OrderActionInput(string? Reason, string? Notes); record AssignRiderInput(Guid RiderId); record PaymentRejectInput(string Reason);
 record PaymentUpdateResult(bool PaymentExists, bool Updated, string? Message);
 record BankConfig(string? BankName, string? AccountName, string? AccountNumber, string? Branch)
@@ -288,11 +290,11 @@ record BankConfig(string? BankName, string? AccountName, string? AccountNumber, 
 }
 record ReceiptStorageConfig(string BasePath);
 record PaymentRecord(Guid Id, Guid OrderId, string PaymentMethod, string PaymentStatus, string? ReceiptStorageKey, string? ReceiptOriginalName, string? ReceiptContentType, long ReceiptSize, DateTimeOffset? ReceiptUploadedAt, Guid? VerifiedBy, DateTimeOffset? VerifiedAt, Guid? RejectedBy, DateTimeOffset? RejectedAt, string? RejectionReason, DateTimeOffset CreatedAt);
-record ProductDto(Guid Id, string Sku, string Name, decimal Price, int StockQuantity, bool Active, string? ImageUrl);
+public record ProductDto(Guid Id, string Sku, string Name, decimal Price, int StockQuantity, bool Active, string? ImageUrl);
 record BasketLineView(Guid ProductId, string Sku, string Name, decimal UnitPrice, int Quantity, decimal LineTotal, bool Available, int StockQuantity, string? ImageUrl);
 record BasketView(List<BasketLineView> Lines, decimal Subtotal, decimal Tax, decimal DeliveryFee, decimal Total, string Currency);
 record CheckoutResult(Guid OrderId, string Status, decimal Subtotal, decimal Tax, decimal DeliveryFee, decimal Total, string? Error = null);
-record ReservationResponse(Guid OrderId, Guid? ReservationId, string State);
+public record ReservationResponse(Guid OrderId, Guid? ReservationId, string State);
 record SalesRow(Guid Id, DateTimeOffset CreatedAt, string Status, decimal Subtotal, decimal Tax, decimal DeliveryFee, decimal Total, string Currency, string PaymentMethod, string PaymentStatus);
 record SalesReport(int OrderCount, decimal RecognizedSales, decimal Tax, decimal DeliveryFee, DateTimeOffset GeneratedAt, List<SalesRow> Orders);
 static class CorrelationId { public static Guid From(HttpRequest request) => Guid.TryParse(request.Headers["X-Correlation-Id"].FirstOrDefault(), out var id) ? id : Guid.NewGuid(); }
@@ -308,7 +310,7 @@ namespace Order.Api
         public async Task<global::Principal?> Principal(HttpRequest request, params string[] roles) { var token = request.Headers.Authorization.FirstOrDefault(); if (string.IsNullOrWhiteSpace(token)) return null; using var message = new HttpRequestMessage(HttpMethod.Get, "/auth/introspect"); message.Headers.TryAddWithoutValidation("Authorization", token); try { var result = await http.SendAsync(message); if (!result.IsSuccessStatusCode) return null; var root = JsonDocument.Parse(await result.Content.ReadAsStringAsync()).RootElement; if (!root.GetProperty("active").GetBoolean()) return null; var found = root.GetProperty("roles").EnumerateArray().Select(x => x.GetString()!).ToArray(); return roles.Any(found.Contains) ? new global::Principal(root.GetProperty("subject").GetGuid(), found) : null; } catch { return null; } }
     }
 }
-sealed class CatalogClient(HttpClient http, IConfiguration config)
+public sealed class CatalogClient(HttpClient http, IConfiguration config) : ICatalogClient
 {
     string Key => config["Internal:CatalogKey"] ?? string.Empty;
     public async Task<ProductDto?> Product(Guid id) { try { var p = await http.GetFromJsonAsync<JsonElement>($"/products/{id}"); return p.ValueKind == JsonValueKind.Undefined ? null : new ProductDto(p.GetProperty("id").GetGuid(), p.GetProperty("sku").GetString()!, p.GetProperty("name").GetString()!, p.GetProperty("price").GetDecimal(), p.GetProperty("stockQuantity").GetInt32(), p.GetProperty("active").GetBoolean(), p.TryGetProperty("imageUrl", out var image) && image.ValueKind == JsonValueKind.String ? image.GetString() : null); } catch { return null; } }
