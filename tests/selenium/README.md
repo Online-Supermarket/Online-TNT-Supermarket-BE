@@ -21,8 +21,8 @@ npm run test:public
 
 Selenium Manager resolves ChromeDriver automatically; the first run needs internet
 access and may take longer. See https://www.selenium.dev/documentation/selenium_manager/.
-`npm run test:public` runs four public checks and explicitly SKIPS the customer journey.
-It is not evidence that the full customer E2E workflow passed.
+`npm run test:public` runs five public checks and explicitly SKIPS the customer journey.
+Sorting is also explicitly skipped if there are fewer than two distinct product prices. It is not evidence that skipped coverage passed.
 
 ## Full customer journey
 
@@ -56,6 +56,7 @@ Optional `E2E_TIMEOUT_MS` adjusts explicit waits (default 20000).
 |---|---|---|
 | 01 | Real catalogue, search, no results, reset | Products loaded, every result matches, empty result shown, reset restores products |
 | 02 | Price sorting | At least two products, all prices numeric and ascending |
+| 06 | Quick View | Product name/price match, quantity lower bound, modal closes |
 | 03 | Guest access protection | Cart and checkout redirect to login; checkout content absent |
 | 04 | Invalid login | Identity rejection shown, login URL retained, no session token |
 | 05 | Customer journey across Identity, Catalog and Order | Login, empty basket prerequisite, add product, quantity 1→2, subtotal/total, persistence after reload, checkout, missing-receipt guard, basket cleanup |
@@ -154,5 +155,5 @@ JavaScript syntax checks passed. Dependencies installed successfully. The deploy
 frontend returned HTTP 200. This execution environment could not launch Chrome:
 `socket() failed: Operation not permitted`, resulting in browser startup failures
 before application assertions. Therefore **no E2E scenario is claimed to have passed**
-until a run on the user's machine or GitHub Actions succeeds. Authenticated flow
+in this local runner. GitHub Actions run 39139841999 passed catalogue/search, guest protection and invalid login (3 passed). Sorting lacked the necessary second product; authenticated coverage was skipped. Sorting now reports the missing fixture explicitly as SKIPPED, and Quick View coverage was added. A follow-up CI run verifies the updated suite. Authenticated flow
 also requires a dedicated Customer account supplied through environment variables.

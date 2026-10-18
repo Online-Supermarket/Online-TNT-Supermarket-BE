@@ -70,6 +70,12 @@ test('E2E-01 real catalogue loads and search filters products', async t => scena
 test('E2E-02 catalogue price sorting is ascending', async t => scenario(t, async d => {
   await open(d, '/categories');
   await visible(d, By.css('.product-card'));
+  const initialPrices = await d.findElements(By.css('.product-card .price-tag'));
+  const uniquePrices = new Set(await Promise.all(initialPrices.map(x => x.getText())));
+  if (uniquePrices.size < 2) {
+    t.skip('Sorting requires two products with different prices; current deployed catalogue lacks this fixture.');
+    return;
+  }
   await click(d, By.css('select option[value=PRICE_LOW]'));
   await d.wait(async () => {
     const prices = await d.findElements(By.css('.product-card .price-tag'));
@@ -160,4 +166,22 @@ test('E2E-05 customer login cart persistence quantity totals checkout and cleanu
       }
     }
   }
+}));
+
+
+test('E2E-06 quick view matches product and quantity cannot go below one', async t => scenario(t, async d => {
+  await open(d, '/categories');
+  const card = await visible(d, By.css('.product-card'));
+  const name = await card.findElement(By.css('.product-name')).getText();
+  const price = await card.findElement(By.css('.price-tag')).getText();
+  await card.findElement(By.css('button[title="Quick View"]')).click();
+  const modal = await visible(d, By.css('.quick-view-content'));
+  assert.equal(await modal.findElement(By.css('h2')).getText(), name);
+  assert.ok((await modal.getText()).includes(price), 'Quick View price differs from product card');
+  const decrement = await modal.findElement(By.xpath(".//button[normalize-space(.)='-']"));
+  await decrement.click();
+  const count = await modal.findElement(By.xpath(".//button[normalize-space(.)='-']/following-sibling::span"));
+  assert.equal(await count.getText(), '1');
+  await d.findElement(By.xpath("//div[@class='quick-view-content']/preceding-sibling::button")).click();
+  await d.wait(async () => (await d.findElements(By.css('.quick-view-content'))).length === 0, timeout);
 }));
