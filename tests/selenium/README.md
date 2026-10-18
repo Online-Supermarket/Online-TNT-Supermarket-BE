@@ -26,7 +26,7 @@ Sorting is also explicitly skipped if there are fewer than two distinct product 
 
 ## Full customer journey
 
-Use a dedicated **Customer** test account with an empty basket. Have at least one
+Use a dedicated **Customer** test account with an empty basket and a valid delivery address (saved address or complete account address). Have at least one
 catalogue product with stock >= 2. Do not use your admin account or a teammate's
 shopping account. The suite refuses an existing basket and only removes its own
 single test product. Do not use the same test account concurrently.

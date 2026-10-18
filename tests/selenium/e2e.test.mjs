@@ -137,6 +137,9 @@ test('E2E-05 customer login cart persistence quantity totals checkout and cleanu
     await visible(d, heading('Express Checkout'));
     await visible(d, heading('Delivery Address'));
     await visible(d, heading('Payment Method'));
+    assert.equal((await d.findElements(By.css('[role=alert]'))).length, 0, 'Checkout API reported an error');
+    assert.ok((await d.findElements(By.css('input[name=address]'))).length, 'Dedicated test account needs a delivery address to verify payment validation');
+    assert.equal(await (await visible(d, button('Place Order'))).isEnabled(), true, 'COD checkout should be available before checking receipt validation');
     await click(d, By.xpath("//button[.//strong[normalize-space(.)='Bank Transfer']]"));
     const place = await visible(d, button('Place Order'));
     assert.equal(await place.isEnabled(), false, 'Bank transfer must require a receipt');
