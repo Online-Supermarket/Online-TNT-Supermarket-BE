@@ -23,6 +23,57 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
+      - name: Verify Azure Container Registry readiness
+        run: |
+          REGISTRY="${{ secrets.AZURE_ACR_LOGIN_SERVER }}"
+          if [ -z "$REGISTRY" ]; then
+            echo "::error::AZURE_ACR_LOGIN_SERVER secret is not set or empty."
+            exit 1
+          fi
+
+          echo "Checking health and readiness for registry: $REGISTRY"
+          MAX_RETRIES=8
+          RETRY_DELAY=15
+          IS_READY=false
+
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo "--- Readiness probe $attempt of $MAX_RETRIES ---"
+            RESPONSE_FILE=$(mktemp)
+            HTTP_STATUS=$(curl -s -S -o "$RESPONSE_FILE" -w "%{http_code}" --connect-timeout 10 --max-time 15 "https://${REGISTRY}/v2/" || echo "000")
+            BODY=$(cat "$RESPONSE_FILE")
+            rm -f "$RESPONSE_FILE"
+
+            echo "Probe returned HTTP status: $HTTP_STATUS"
+
+            if echo "$BODY" | grep -q "REGISTRY_NOT_READY"; then
+              echo "::warning::Registry returned REGISTRY_NOT_READY. The registry is initializing or temporarily not ready."
+              echo "Response body: $BODY"
+              echo "Waiting ${RETRY_DELAY}s before retrying..."
+              sleep $RETRY_DELAY
+            elif [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "200" ]; then
+              # Standard Docker v2 registry unauthenticated response is 401 with WWW-Authenticate header
+              echo "Azure Container Registry ($REGISTRY) is ready and responsive (HTTP $HTTP_STATUS)."
+              IS_READY=true
+              break
+            elif [ "$HTTP_STATUS" = "000" ]; then
+              echo "::warning::Could not establish TCP/TLS connection to $REGISTRY. Waiting ${RETRY_DELAY}s before retrying..."
+              sleep $RETRY_DELAY
+            else
+              echo "::warning::Registry returned HTTP $HTTP_STATUS ($BODY). Waiting ${RETRY_DELAY}s before retrying..."
+              sleep $RETRY_DELAY
+            fi
+          done
+
+          if [ "$IS_READY" != "true" ]; then
+            echo "::error::Azure Container Registry ($REGISTRY) is not ready after $MAX_RETRIES probes."
+            echo "Please verify in Azure Portal:"
+            echo "  1. Azure subscription status is Active (not suspended or billing capped)."
+            echo "  2. ACR provisioningState is 'Succeeded'."
+            echo "  3. Public network access is enabled or GitHub runner is allowed."
+            echo "  4. Admin user credentials (AZURE_ACR_USERNAME / AZURE_ACR_PASSWORD) match Azure Portal access keys."
+            exit 1
+          fi
+
       - name: Log in to Azure Container Registry
         uses: docker/login-action@v3
         with:
@@ -38,5 +89,24 @@ jobs:
             --tag "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-catalog:${SHA}" \
             --tag "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-catalog:latest" \
             services/catalog/Catalog.Api
-          docker push "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-catalog:${SHA}"
-          docker push "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-catalog:latest"
+
+          push_with_retry() {
+            local img="$1"
+            local max_attempts=4
+            local delay=15
+            for attempt in $(seq 1 $max_attempts); do
+              echo "Pushing $img (attempt $attempt of $max_attempts)..."
+              if docker push "$img"; then
+                echo "Successfully pushed $img"
+                return 0
+              fi
+              echo "Push attempt $attempt failed for $img. Waiting ${delay}s before retrying..."
+              sleep $delay
+              delay=$((delay * 2))
+            done
+            echo "::error::Failed to push $img after $max_attempts attempts."
+            return 1
+          }
+
+          push_with_retry "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-catalog:${SHA}"
+          push_with_retry "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-catalog:latest"
