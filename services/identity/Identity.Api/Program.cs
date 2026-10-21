@@ -469,7 +469,7 @@ static class IdentityValidation
     public static Dictionary<string, string[]> Profile(string? nic, string? phone)
     {
         var errors = new Dictionary<string, string[]>();
-        if (!string.IsNullOrWhiteSpace(nic) && !System.Text.RegularExpressions.Regex.IsMatch(nic.Trim(), @"^(?:\d{9}[VvXx]|\d{12})$")) errors["idNumber"] = ["Please enter a valid Sri Lankan NIC number."];
+        if (!string.IsNullOrWhiteSpace(nic) && !System.Text.RegularExpressions.Regex.IsMatch(nic.Trim(), @"^(?:\d{10}[Vv]|\d{12})$")) errors["idNumber"] = ["Please enter a valid Sri Lankan NIC number."];
         if (!string.IsNullOrWhiteSpace(phone) && !System.Text.RegularExpressions.Regex.IsMatch(phone.Trim(), @"^(?:0\d{9}|\+94\d{9})$")) errors["contactNumber"] = ["Please enter a valid Sri Lankan phone number."];
         return errors;
     }
