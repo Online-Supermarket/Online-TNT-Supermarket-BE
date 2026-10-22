@@ -26,8 +26,19 @@ jobs:
       - name: Verify Azure Container Registry readiness
         run: |
           REGISTRY="${{ secrets.AZURE_ACR_LOGIN_SERVER }}"
+          USERNAME="${{ secrets.AZURE_ACR_USERNAME }}"
+          PASSWORD="${{ secrets.AZURE_ACR_PASSWORD }}"
+
           if [ -z "$REGISTRY" ]; then
             echo "::error::AZURE_ACR_LOGIN_SERVER secret is not set or empty."
+            exit 1
+          fi
+          if [ -z "$USERNAME" ]; then
+            echo "::error::AZURE_ACR_USERNAME secret is not set or empty."
+            exit 1
+          fi
+          if [ -z "$PASSWORD" ]; then
+            echo "::error::AZURE_ACR_PASSWORD secret is not set or empty."
             exit 1
           fi
 
@@ -38,28 +49,42 @@ jobs:
 
           for attempt in $(seq 1 $MAX_RETRIES); do
             echo "--- Readiness probe $attempt of $MAX_RETRIES ---"
-            RESPONSE_FILE=$(mktemp)
-            HTTP_STATUS=$(curl -s -S -o "$RESPONSE_FILE" -w "%{http_code}" --connect-timeout 10 --max-time 15 "https://${REGISTRY}/v2/" || echo "000")
-            BODY=$(cat "$RESPONSE_FILE")
-            rm -f "$RESPONSE_FILE"
 
-            echo "Probe returned HTTP status: $HTTP_STATUS"
+            # 1. Probe Docker v2 API endpoint
+            V2_FILE=$(mktemp)
+            V2_STATUS=$(curl -s -S -o "$V2_FILE" -w "%{http_code}" --connect-timeout 10 --max-time 15 "https://${REGISTRY}/v2/" || echo "000")
+            V2_BODY=$(cat "$V2_FILE" 2>/dev/null || echo "")
+            rm -f "$V2_FILE"
 
-            if echo "$BODY" | grep -q "REGISTRY_NOT_READY"; then
-              echo "::warning::Registry returned REGISTRY_NOT_READY. The registry is initializing or temporarily not ready."
-              echo "Response body: $BODY"
-              echo "Waiting ${RETRY_DELAY}s before retrying..."
+            # 2. Probe OAuth2 token authentication endpoint
+            TOKEN_FILE=$(mktemp)
+            TOKEN_STATUS=$(curl -s -S -o "$TOKEN_FILE" -w "%{http_code}" --connect-timeout 10 --max-time 15 "https://${REGISTRY}/oauth2/token?service=${REGISTRY}" || echo "000")
+            TOKEN_BODY=$(cat "$TOKEN_FILE" 2>/dev/null || echo "")
+            rm -f "$TOKEN_FILE"
+
+            echo "Probe returned: v2 HTTP status: $V2_STATUS, token endpoint HTTP status: $TOKEN_STATUS"
+
+            COMBINED_RESP="$V2_BODY $TOKEN_BODY"
+
+            if echo "$COMBINED_RESP" | grep -q "REGISTRY_NOT_READY"; then
+              CORRELATION=$(echo "$COMBINED_RESP" | grep -o 'CorrelationId: [^"}]*' | head -n 1 || echo "")
+              echo "::warning::Registry returned REGISTRY_NOT_READY ($CORRELATION). The registry is initializing, suspended, or not ready."
+              echo "Waiting ${RETRY_DELAY}s before probe retry..."
               sleep $RETRY_DELAY
-            elif [ "$HTTP_STATUS" = "401" ] || [ "$HTTP_STATUS" = "200" ]; then
-              # Standard Docker v2 registry unauthenticated response is 401 with WWW-Authenticate header
-              echo "Azure Container Registry ($REGISTRY) is ready and responsive (HTTP $HTTP_STATUS)."
-              IS_READY=true
-              break
-            elif [ "$HTTP_STATUS" = "000" ]; then
-              echo "::warning::Could not establish TCP/TLS connection to $REGISTRY. Waiting ${RETRY_DELAY}s before retrying..."
+            elif [ "$V2_STATUS" = "000" ] || [ "$TOKEN_STATUS" = "000" ]; then
+              echo "::warning::Could not establish TCP/TLS connection to $REGISTRY (v2: $V2_STATUS, token: $TOKEN_STATUS). Waiting ${RETRY_DELAY}s..."
               sleep $RETRY_DELAY
+            elif [ "$V2_STATUS" = "401" ] || [ "$V2_STATUS" = "200" ]; then
+              if ! echo "$TOKEN_BODY" | grep -q "REGISTRY_NOT_READY"; then
+                echo "Azure Container Registry ($REGISTRY) authentication endpoint is ready and responsive."
+                IS_READY=true
+                break
+              else
+                echo "::warning::Token endpoint returned REGISTRY_NOT_READY. Waiting ${RETRY_DELAY}s..."
+                sleep $RETRY_DELAY
+              fi
             else
-              echo "::warning::Registry returned HTTP $HTTP_STATUS ($BODY). Waiting ${RETRY_DELAY}s before retrying..."
+              echo "::warning::Registry returned unexpected response (v2: $V2_STATUS, token: $TOKEN_STATUS). Waiting ${RETRY_DELAY}s..."
               sleep $RETRY_DELAY
             fi
           done
@@ -67,10 +92,10 @@ jobs:
           if [ "$IS_READY" != "true" ]; then
             echo "::error::Azure Container Registry ($REGISTRY) is not ready after $MAX_RETRIES probes."
             echo "Please verify in Azure Portal:"
-            echo "  1. Azure subscription status is Active (not suspended or billing capped)."
+            echo "  1. Azure subscription status is Active (not disabled, suspended, or spending limit reached)."
             echo "  2. ACR provisioningState is 'Succeeded'."
-            echo "  3. Public network access is enabled or GitHub runner is allowed."
-            echo "  4. Admin user credentials (AZURE_ACR_USERNAME / AZURE_ACR_PASSWORD) match Azure Portal access keys."
+            echo "  3. Public network access is enabled (Networking -> Public network access -> All networks)."
+            echo "  4. Admin user is enabled (Access keys -> Admin user checkbox enabled) and AZURE_ACR_USERNAME / AZURE_ACR_PASSWORD secrets match."
             exit 1
           fi
 
