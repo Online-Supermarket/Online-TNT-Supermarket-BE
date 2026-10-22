@@ -1,9 +1,5 @@
 name: Selenium E2E
 on:
-  pull_request:
-    paths:
-      - 'tests/selenium/**'
-      - '.github/workflows/e2e.yml'
   workflow_dispatch:
     inputs:
       app_url:
@@ -56,33 +52,19 @@ jobs:
       - run: npm ci
       - run: npm run check
       - name: Run public checks
-        if: github.event_name == 'pull_request' || inputs.public_only
+        if: inputs.public_only
         run: npm run test:public
       - name: Run full customer suite
-        if: ${{ github.event_name != 'pull_request' && !inputs.public_only }}
+        if: ${{ !inputs.public_only }}
         run: npm test
+      - name: Build report evidence
+        if: always()
+        run: python summarize.py
       - name: Upload actual results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: selenium-e2e-results
           path: tests/selenium/reports/
-          retention-days: 3
+          retention-days: 14
           if-no-files-found: warn
-      - name: Summarize JUnit results
-        if: always()
-        run: |
-          python - <<'PY'
-          import os, pathlib, xml.etree.ElementTree as ET
-          path = pathlib.Path('reports/junit.xml')
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
-              out.write('## Selenium E2E results\n\n')
-              if not path.exists():
-                  out.write('No test report: inspect setup/credentials failure in job logs.\n')
-              else:
-                  root = ET.parse(path).getroot()
-                  out.write('| Test | Result |\n|---|---|\n')
-                  for case in root.iter('testcase'):
-                      status = 'FAIL' if case.find('failure') is not None or case.find('error') is not None else 'SKIPPED' if case.find('skipped') is not None else 'PASS'
-                      out.write(f"| {case.attrib.get('name','').replace('|','/')} | {status} |\n")
-          PY

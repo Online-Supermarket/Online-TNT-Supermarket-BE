@@ -88,6 +88,8 @@ option disabled. No live order creation was performed during implementation.
 
 - Console: named PASS/FAIL/SKIPPED scenarios and diagnostic messages.
 - `reports/junit.xml`: machine-readable report for the group automation pipeline.
+- CI automatically creates `reports/summary.md` and `summary.json` from the JUnit results; download the artifact for report evidence. Locally, if Python is installed, run `python summarize.py`.
+- Reports are replaced on each run; save any evidence you need before rerunning.
 - `reports/run-info.json`: timestamp, target, run scope and order-write flag.
 - `reports/screenshots/`: failure screenshots where a browser session exists;
   login pages are excluded. These may contain test account details. Review before sharing.
@@ -99,7 +101,7 @@ option disabled. No live order creation was performed during implementation.
 
 ## GitHub Actions and group integration
 
-`.github/workflows/e2e.yml` runs public checks on pull requests changing this suite.
+The existing `.github/workflows/ci.yml` now calls the reusable E2E workflow after the backend test job on pull requests. This integrates backend tests/coverage and public UI checks in one workflow; other group roles still need their own integration.
 It has a manual dispatch and a reusable `workflow_call` interface. It does not deploy
 application code. Existing repository workflows still follow their own triggers.
 
@@ -149,11 +151,10 @@ Screenshots alone do not replace live code.
 - Include source, tests, package lock, configurations and README in group submission.
 - Exclude node_modules, secrets, personal account data and stale reports.
 
-## Validation status at implementation
+## Verified baseline and remaining work
 
-JavaScript syntax checks passed. Dependencies installed successfully. The deployed
-frontend returned HTTP 200. This execution environment could not launch Chrome:
-`socket() failed: Operation not permitted`, resulting in browser startup failures
-before application assertions. Therefore **no E2E scenario is claimed to have passed**
-in this local runner. GitHub Actions run 39139841999 passed catalogue/search, guest protection and invalid login (3 passed). Sorting lacked the necessary second product; authenticated coverage was skipped. Sorting now reports the missing fixture explicitly as SKIPPED, and Quick View coverage was added. A follow-up CI run verifies the updated suite. Authenticated flow
-also requires a dedicated Customer account supplied through environment variables.
+The final October 18 CI run [39140194335](https://github.com/Online-Supermarket/Online-TNT-Supermarket-BE/actions/runs/39140194335) completed successfully. Public coverage previously showed 4 PASS and 2 SKIPPED: sorting lacked a second distinct price, and the authenticated customer journey lacked test credentials. Skipped scenarios must not be presented as passing.
+
+The current update integrates E2E with backend CI and generates evidence summaries. Its new CI run is the authoritative result for this revision. Customer credentials, sufficient catalogue fixtures and a full successful run are still required before claiming complete coverage.
+
+See [HANDOFF.md](HANDOFF.md) for the remaining user steps and report wording.
