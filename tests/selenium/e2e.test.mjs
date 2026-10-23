@@ -44,7 +44,14 @@ async function quantity(driver, expected) {
 }
 async function money(driver, label) {
   const el = await visible(driver, By.xpath(`//span[normalize-space(.)='${label}']/following-sibling::*[1]`));
-  return Number((await el.getText()).replace(/[^0-9.-]/g, ''));
+  return parsePrice(await el.getText());
+}
+function parsePrice(text) {
+  // "Rs. 350.00" includes punctuation after the currency, so stripping all
+  // non-numeric characters would produce ".350.00" (NaN).
+  const amount = text.match(/[\d,]+(?:\.\d{1,2})?/);
+  assert.ok(amount, `Expected a price, received: ${text}`);
+  return Number(amount[0].replaceAll(',', ''));
 }
 
 test('E2E-01 real catalogue loads and search filters products', async t => scenario(t, async d => {
@@ -79,7 +86,7 @@ test('E2E-02 catalogue price sorting is ascending', async t => scenario(t, async
   await click(d, By.css('select option[value=PRICE_LOW]'));
   await d.wait(async () => {
     const prices = await d.findElements(By.css('.product-card .price-tag'));
-    const values = await Promise.all(prices.map(async el => Number((await el.getText()).replace(/[^0-9.-]/g, ''))));
+    const values = await Promise.all(prices.map(async el => parsePrice(await el.getText())));
     return values.length >= 2 && values.every((v, i) => Number.isFinite(v) && (!i || values[i - 1] <= v));
   }, timeout, 'Need at least two products and ascending prices');
 }));
@@ -117,7 +124,7 @@ test('E2E-05 customer login cart persistence quantity totals checkout and cleanu
     const product = await visible(d, By.xpath("//div[contains(concat(' ',normalize-space(@class),' '),' product-card ')][.//div[contains(.,'items available') and number(substring-before(normalize-space(.),' items available')) >= 2]]"));
     const name = await product.findElement(By.css('.product-name')).getText();
     productName = name;
-    const price = Number((await product.findElement(By.css('.price-tag')).getText()).replace(/[^0-9.-]/g, ''));
+    const price = parsePrice(await product.findElement(By.css('.price-tag')).getText());
     added = true; // cleanup also covers partial/late API success
     await product.findElement(By.css('.product-price-row button')).click();
     // Wait for the basket count in the navbar, avoiding navigation while PUT is in flight.
