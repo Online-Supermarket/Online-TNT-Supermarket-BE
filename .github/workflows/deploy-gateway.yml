@@ -24,6 +24,7 @@ jobs:
     env:
       AZURE_WEBAPP_NAME: tnt-gateway-ovindu
       GATEWAY_IMAGE: ovindu0717/tnt-gateway
+      IMAGE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     steps:
@@ -47,11 +48,9 @@ jobs:
           password: ${{ env.DOCKERHUB_TOKEN }}
 
       - name: Build and push gateway image
-        env:
-          SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
           docker build \
-            --tag "${{ env.GATEWAY_IMAGE }}:${SHA}" \
+            --tag "${{ env.GATEWAY_IMAGE }}:${{ env.IMAGE_TAG }}" \
             --tag "${{ env.GATEWAY_IMAGE }}:latest" \
             gateway
 
@@ -73,7 +72,7 @@ jobs:
             return 1
           }
 
-          push_with_retry "${{ env.GATEWAY_IMAGE }}:${SHA}"
+          push_with_retry "${{ env.GATEWAY_IMAGE }}:${{ env.IMAGE_TAG }}"
           push_with_retry "${{ env.GATEWAY_IMAGE }}:latest"
 
       - name: Deploy Gateway container to Azure Web App
@@ -81,4 +80,4 @@ jobs:
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZURE_GATEWAY_PUBLISH_PROFILE }}
-          images: 'docker.io/${{ env.GATEWAY_IMAGE }}:latest'
+          images: 'docker.io/${{ env.GATEWAY_IMAGE }}:${{ env.IMAGE_TAG }}'
