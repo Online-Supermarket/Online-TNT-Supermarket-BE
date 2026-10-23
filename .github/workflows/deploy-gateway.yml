@@ -4,9 +4,11 @@ on:
   workflow_run:
     workflows: [Release gate]
     types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: deploy-gateway-production
@@ -15,106 +17,43 @@ concurrency:
 jobs:
   deploy:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       vars.AZURE_DEPLOY_ENABLED != 'false')
     runs-on: ubuntu-latest
+    env:
+      AZURE_WEBAPP_NAME: tnt-gateway-ovindu
+      GATEWAY_IMAGE: ovindu0717/tnt-gateway
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Verify Azure Container Registry readiness
-        run: |
-          REGISTRY="${{ secrets.AZURE_ACR_LOGIN_SERVER }}"
-          USERNAME="${{ secrets.AZURE_ACR_USERNAME }}"
-          PASSWORD="${{ secrets.AZURE_ACR_PASSWORD }}"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-          if [ -z "$REGISTRY" ]; then
-            echo "::error::AZURE_ACR_LOGIN_SERVER secret is not set or empty."
-            exit 1
-          fi
-          if [ -z "$USERNAME" ]; then
-            echo "::error::AZURE_ACR_USERNAME secret is not set or empty."
-            exit 1
-          fi
-          if [ -z "$PASSWORD" ]; then
-            echo "::error::AZURE_ACR_PASSWORD secret is not set or empty."
-            exit 1
-          fi
-
-          echo "Checking health and readiness for registry: $REGISTRY"
-          MAX_RETRIES=8
-          RETRY_DELAY=15
-          IS_READY=false
-
-          for attempt in $(seq 1 $MAX_RETRIES); do
-            echo "--- Readiness probe $attempt of $MAX_RETRIES ---"
-
-            # 1. Probe Docker v2 API endpoint
-            V2_FILE=$(mktemp)
-            V2_STATUS=$(curl -s -S -o "$V2_FILE" -w "%{http_code}" --connect-timeout 10 --max-time 15 "https://${REGISTRY}/v2/" || echo "000")
-            V2_BODY=$(cat "$V2_FILE" 2>/dev/null || echo "")
-            rm -f "$V2_FILE"
-
-            # 2. Probe OAuth2 token authentication endpoint
-            TOKEN_FILE=$(mktemp)
-            TOKEN_STATUS=$(curl -s -S -o "$TOKEN_FILE" -w "%{http_code}" --connect-timeout 10 --max-time 15 "https://${REGISTRY}/oauth2/token?service=${REGISTRY}" || echo "000")
-            TOKEN_BODY=$(cat "$TOKEN_FILE" 2>/dev/null || echo "")
-            rm -f "$TOKEN_FILE"
-
-            echo "Probe returned: v2 HTTP status: $V2_STATUS, token endpoint HTTP status: $TOKEN_STATUS"
-
-            COMBINED_RESP="$V2_BODY $TOKEN_BODY"
-
-            if echo "$COMBINED_RESP" | grep -q "REGISTRY_NOT_READY"; then
-              CORRELATION=$(echo "$COMBINED_RESP" | grep -o 'CorrelationId: [^"}]*' | head -n 1 || echo "")
-              echo "::warning::Registry returned REGISTRY_NOT_READY ($CORRELATION). The registry is initializing, suspended, or not ready."
-              echo "Waiting ${RETRY_DELAY}s before probe retry..."
-              sleep $RETRY_DELAY
-            elif [ "$V2_STATUS" = "000" ] || [ "$TOKEN_STATUS" = "000" ]; then
-              echo "::warning::Could not establish TCP/TLS connection to $REGISTRY (v2: $V2_STATUS, token: $TOKEN_STATUS). Waiting ${RETRY_DELAY}s..."
-              sleep $RETRY_DELAY
-            elif [ "$V2_STATUS" = "401" ] || [ "$V2_STATUS" = "200" ]; then
-              if ! echo "$TOKEN_BODY" | grep -q "REGISTRY_NOT_READY"; then
-                echo "Azure Container Registry ($REGISTRY) authentication endpoint is ready and responsive."
-                IS_READY=true
-                break
-              else
-                echo "::warning::Token endpoint returned REGISTRY_NOT_READY. Waiting ${RETRY_DELAY}s..."
-                sleep $RETRY_DELAY
-              fi
-            else
-              echo "::warning::Registry returned unexpected response (v2: $V2_STATUS, token: $TOKEN_STATUS). Waiting ${RETRY_DELAY}s..."
-              sleep $RETRY_DELAY
-            fi
-          done
-
-          if [ "$IS_READY" != "true" ]; then
-            echo "::error::Azure Container Registry ($REGISTRY) is not ready after $MAX_RETRIES probes."
-            echo "Please verify in Azure Portal:"
-            echo "  1. Azure subscription status is Active (not disabled, suspended, or spending limit reached)."
-            echo "  2. ACR provisioningState is 'Succeeded'."
-            echo "  3. Public network access is enabled (Networking -> Public network access -> All networks)."
-            echo "  4. Admin user is enabled (Access keys -> Admin user checkbox enabled) and AZURE_ACR_USERNAME / AZURE_ACR_PASSWORD secrets match."
-            exit 1
-          fi
-
-      - name: Log in to Azure Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}
-          username: ${{ secrets.AZURE_ACR_USERNAME }}
-          password: ${{ secrets.AZURE_ACR_PASSWORD }}
-
-      - name: Build and push image
+      - name: Build gateway image
         env:
           SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
           docker build \
-            --tag "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-gateway:${SHA}" \
-            --tag "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-gateway:latest" \
+            --tag "${{ env.GATEWAY_IMAGE }}:${SHA}" \
+            --tag "${{ env.GATEWAY_IMAGE }}:latest" \
             gateway
 
+      - name: Log in to Docker Hub
+        if: ${{ (secrets.DOCKERHUB_USERNAME != '' || secrets.DOCKER_USERNAME != '') && (secrets.DOCKERHUB_TOKEN != '' || secrets.DOCKER_PASSWORD != '') }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME || secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN || secrets.DOCKER_PASSWORD }}
+
+      - name: Push image to Docker Hub
+        if: ${{ (secrets.DOCKERHUB_USERNAME != '' || secrets.DOCKER_USERNAME != '') && (secrets.DOCKERHUB_TOKEN != '' || secrets.DOCKER_PASSWORD != '') }}
+        env:
+          SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+        run: |
           push_with_retry() {
             local img="$1"
             local max_attempts=4
@@ -133,5 +72,33 @@ jobs:
             return 1
           }
 
-          push_with_retry "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-gateway:${SHA}"
-          push_with_retry "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-gateway:latest"
+          push_with_retry "${{ env.GATEWAY_IMAGE }}:${SHA}"
+          push_with_retry "${{ env.GATEWAY_IMAGE }}:latest"
+
+      - name: Docker Hub credentials check
+        if: ${{ !( (secrets.DOCKERHUB_USERNAME != '' || secrets.DOCKER_USERNAME != '') && (secrets.DOCKERHUB_TOKEN != '' || secrets.DOCKER_PASSWORD != '') ) }}
+        run: |
+          echo "::notice::Docker Hub credentials are not configured in repository secrets (DOCKERHUB_USERNAME / DOCKERHUB_TOKEN). The image was built locally for validation, but image push to Docker Hub was skipped."
+
+      - name: Log in to Azure (OIDC)
+        if: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Web App (via OIDC)
+        if: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' }}
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          images: 'docker.io/${{ env.GATEWAY_IMAGE }}:latest'
+
+      - name: Deploy to Azure Web App (via Publish Profile fallback)
+        if: ${{ !(secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '') && secrets.AZURE_GATEWAY_PUBLISH_PROFILE != '' }}
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_GATEWAY_PUBLISH_PROFILE }}
+          images: 'docker.io/${{ env.GATEWAY_IMAGE }}:latest'

@@ -4,9 +4,11 @@ on:
   workflow_run:
     workflows: [Release gate]
     types: [completed]
+  workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: deploy-catalog-production
@@ -15,123 +17,52 @@ concurrency:
 jobs:
   deploy:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       vars.AZURE_DEPLOY_ENABLED != 'false')
     runs-on: ubuntu-latest
+    env:
+      AZURE_WEBAPP_NAME: tnt-catalog-ovindu
+      DOTNET_VERSION: '10.0.x'
+      PROJECT_PATH: services/catalog/Catalog.Api
+      PUBLISH_DIR: ./publish-catalog
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Verify Azure Container Registry readiness
-        run: |
-          REGISTRY="${{ secrets.AZURE_ACR_LOGIN_SERVER }}"
-          USERNAME="${{ secrets.AZURE_ACR_USERNAME }}"
-          PASSWORD="${{ secrets.AZURE_ACR_PASSWORD }}"
-
-          if [ -z "$REGISTRY" ]; then
-            echo "::error::AZURE_ACR_LOGIN_SERVER secret is not set or empty."
-            exit 1
-          fi
-          if [ -z "$USERNAME" ]; then
-            echo "::error::AZURE_ACR_USERNAME secret is not set or empty."
-            exit 1
-          fi
-          if [ -z "$PASSWORD" ]; then
-            echo "::error::AZURE_ACR_PASSWORD secret is not set or empty."
-            exit 1
-          fi
-
-          echo "Checking health and readiness for registry: $REGISTRY"
-          MAX_RETRIES=8
-          RETRY_DELAY=15
-          IS_READY=false
-
-          for attempt in $(seq 1 $MAX_RETRIES); do
-            echo "--- Readiness probe $attempt of $MAX_RETRIES ---"
-
-            # 1. Probe Docker v2 API endpoint
-            V2_FILE=$(mktemp)
-            V2_STATUS=$(curl -s -S -o "$V2_FILE" -w "%{http_code}" --connect-timeout 10 --max-time 15 "https://${REGISTRY}/v2/" || echo "000")
-            V2_BODY=$(cat "$V2_FILE" 2>/dev/null || echo "")
-            rm -f "$V2_FILE"
-
-            # 2. Probe OAuth2 token authentication endpoint
-            TOKEN_FILE=$(mktemp)
-            TOKEN_STATUS=$(curl -s -S -o "$TOKEN_FILE" -w "%{http_code}" --connect-timeout 10 --max-time 15 "https://${REGISTRY}/oauth2/token?service=${REGISTRY}" || echo "000")
-            TOKEN_BODY=$(cat "$TOKEN_FILE" 2>/dev/null || echo "")
-            rm -f "$TOKEN_FILE"
-
-            echo "Probe returned: v2 HTTP status: $V2_STATUS, token endpoint HTTP status: $TOKEN_STATUS"
-
-            COMBINED_RESP="$V2_BODY $TOKEN_BODY"
-
-            if echo "$COMBINED_RESP" | grep -q "REGISTRY_NOT_READY"; then
-              CORRELATION=$(echo "$COMBINED_RESP" | grep -o 'CorrelationId: [^"}]*' | head -n 1 || echo "")
-              echo "::warning::Registry returned REGISTRY_NOT_READY ($CORRELATION). The registry is initializing, suspended, or not ready."
-              echo "Waiting ${RETRY_DELAY}s before probe retry..."
-              sleep $RETRY_DELAY
-            elif [ "$V2_STATUS" = "000" ] || [ "$TOKEN_STATUS" = "000" ]; then
-              echo "::warning::Could not establish TCP/TLS connection to $REGISTRY (v2: $V2_STATUS, token: $TOKEN_STATUS). Waiting ${RETRY_DELAY}s..."
-              sleep $RETRY_DELAY
-            elif [ "$V2_STATUS" = "401" ] || [ "$V2_STATUS" = "200" ]; then
-              if ! echo "$TOKEN_BODY" | grep -q "REGISTRY_NOT_READY"; then
-                echo "Azure Container Registry ($REGISTRY) authentication endpoint is ready and responsive."
-                IS_READY=true
-                break
-              else
-                echo "::warning::Token endpoint returned REGISTRY_NOT_READY. Waiting ${RETRY_DELAY}s..."
-                sleep $RETRY_DELAY
-              fi
-            else
-              echo "::warning::Registry returned unexpected response (v2: $V2_STATUS, token: $TOKEN_STATUS). Waiting ${RETRY_DELAY}s..."
-              sleep $RETRY_DELAY
-            fi
-          done
-
-          if [ "$IS_READY" != "true" ]; then
-            echo "::error::Azure Container Registry ($REGISTRY) is not ready after $MAX_RETRIES probes."
-            echo "Please verify in Azure Portal:"
-            echo "  1. Azure subscription status is Active (not disabled, suspended, or spending limit reached)."
-            echo "  2. ACR provisioningState is 'Succeeded'."
-            echo "  3. Public network access is enabled (Networking -> Public network access -> All networks)."
-            echo "  4. Admin user is enabled (Access keys -> Admin user checkbox enabled) and AZURE_ACR_USERNAME / AZURE_ACR_PASSWORD secrets match."
-            exit 1
-          fi
-
-      - name: Log in to Azure Container Registry
-        uses: docker/login-action@v3
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
         with:
-          registry: ${{ secrets.AZURE_ACR_LOGIN_SERVER }}
-          username: ${{ secrets.AZURE_ACR_USERNAME }}
-          password: ${{ secrets.AZURE_ACR_PASSWORD }}
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Build and push image
-        env:
-          SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      - name: Publish Catalog API
         run: |
-          docker build \
-            --tag "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-catalog:${SHA}" \
-            --tag "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-catalog:latest" \
-            services/catalog/Catalog.Api
+          dotnet publish "${{ env.PROJECT_PATH }}" \
+            --configuration Release \
+            --output "${{ env.PUBLISH_DIR }}" \
+            --nologo
 
-          push_with_retry() {
-            local img="$1"
-            local max_attempts=4
-            local delay=15
-            for attempt in $(seq 1 $max_attempts); do
-              echo "Pushing $img (attempt $attempt of $max_attempts)..."
-              if docker push "$img"; then
-                echo "Successfully pushed $img"
-                return 0
-              fi
-              echo "Push attempt $attempt failed for $img. Waiting ${delay}s before retrying..."
-              sleep $delay
-              delay=$((delay * 2))
-            done
-            echo "::error::Failed to push $img after $max_attempts attempts."
-            return 1
-          }
+      - name: Log in to Azure (OIDC)
+        if: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-          push_with_retry "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-catalog:${SHA}"
-          push_with_retry "${{ secrets.AZURE_ACR_LOGIN_SERVER }}/marketflow-catalog:latest"
+      - name: Deploy to Azure Web App (via OIDC)
+        if: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' }}
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          package: ${{ env.PUBLISH_DIR }}
+
+      - name: Deploy to Azure Web App (via Publish Profile fallback)
+        if: ${{ !(secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '') }}
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_CATALOG_PUBLISH_PROFILE }}
+          package: ${{ env.PUBLISH_DIR }}
