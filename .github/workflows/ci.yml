@@ -100,3 +100,12 @@ jobs:
           tags: marketflow-${{ matrix.service }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  e2e-public:
+    name: Deployed UI checks (public scope)
+    if: github.event_name == 'pull_request'
+    needs: [backend]
+    uses: ./.github/workflows/e2e.yml
+    with:
+      public_only: true
+      app_url: https://gray-rock-0d7c57400.2.azurestaticapps.net
