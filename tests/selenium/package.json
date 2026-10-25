@@ -1,6 +1,13 @@
 {
+  "name": "marketflow-e2e",
   "private": true,
   "type": "module",
-  "scripts": { "test": "node sprint-01-02-ui.mjs" },
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node run.mjs",
+    "test:public": "node run.mjs --public",
+    "test:demo": "node run.mjs --headed",
+    "check": "node --check e2e.test.mjs && node --check lib/browser.mjs && node --check run.mjs"
+  },
   "dependencies": { "selenium-webdriver": "4.37.0" }
 }

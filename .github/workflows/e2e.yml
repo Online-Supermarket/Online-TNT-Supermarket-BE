@@ -1,0 +1,70 @@
+name: Selenium E2E
+on:
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: Deployed frontend URL
+        required: true
+        default: https://gray-rock-0d7c57400.2.azurestaticapps.net
+        type: string
+      public_only:
+        description: Public checks only (skips authenticated customer journey)
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      app_url:
+        type: string
+        default: https://gray-rock-0d7c57400.2.azurestaticapps.net
+      public_only:
+        type: boolean
+        default: false
+    secrets:
+      E2E_EMAIL:
+        required: false
+      E2E_PASSWORD:
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: marketflow-e2e
+  cancel-in-progress: false
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: tests/selenium
+    env:
+      APP_URL: ${{ inputs.app_url || 'https://gray-rock-0d7c57400.2.azurestaticapps.net' }}
+      HEADLESS: 'true'
+      E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
+      E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+      E2E_ALLOW_ORDER: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tests/selenium/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - name: Run public checks
+        if: inputs.public_only
+        run: npm run test:public
+      - name: Run full customer suite
+        if: ${{ !inputs.public_only }}
+        run: npm test
+      - name: Build report evidence
+        if: always()
+        run: python summarize.py
+      - name: Upload actual results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selenium-e2e-results
+          path: tests/selenium/reports/
+          retention-days: 14
+          if-no-files-found: warn
