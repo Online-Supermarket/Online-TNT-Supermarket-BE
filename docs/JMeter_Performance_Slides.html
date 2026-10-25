@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>JMeter Performance Testing — SE3112</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet"/>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #0f0f1a;
+      color: #fff;
+      overflow: hidden;
+    }
+
+    /* ── Navigation ── */
+    .nav {
+      position: fixed;
+      bottom: 32px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 12px;
+      z-index: 100;
+      background: rgba(255,255,255,0.08);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 50px;
+      padding: 10px 20px;
+    }
+    .nav button {
+      background: none;
+      border: none;
+      color: rgba(255,255,255,0.5);
+      font-size: 13px;
+      font-family: 'Inter', sans-serif;
+      font-weight: 600;
+      cursor: pointer;
+      padding: 6px 16px;
+      border-radius: 30px;
+      transition: all 0.2s;
+      letter-spacing: 0.3px;
+    }
+    .nav button.active { background: #6c63ff; color: #fff; }
+    .nav button:hover:not(.active) { color: #fff; background: rgba(255,255,255,0.1); }
+
+    /* ── Slides ── */
+    .slide {
+      width: 100vw;
+      height: 100vh;
+      display: none;
+      position: relative;
+      overflow: hidden;
+    }
+    .slide.active { display: flex; flex-direction: column; }
+
+    /* ── Slide 1 ── */
+    #slide1 {
+      background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 50%, #16213e 100%);
+    }
+
+    .slide1-header {
+      padding: 36px 56px 20px;
+      border-bottom: 1px solid rgba(108, 99, 255, 0.25);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+    .badge {
+      background: linear-gradient(135deg, #6c63ff, #a78bfa);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 5px 14px;
+      border-radius: 20px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    .slide1-title h1 {
+      font-size: 30px;
+      font-weight: 800;
+      background: linear-gradient(90deg, #fff 0%, #a78bfa 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      line-height: 1.2;
+    }
+    .slide1-title p {
+      color: rgba(255,255,255,0.5);
+      font-size: 13px;
+      margin-top: 6px;
+    }
+
+    .slide1-body {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      padding: 24px 56px;
+      flex: 1;
+    }
+
+    /* Left: approach cards */
+    .approach-col { display: flex; flex-direction: column; gap: 14px; }
+
+    .approach-card {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(108,99,255,0.2);
+      border-radius: 14px;
+      padding: 16px 20px;
+      transition: border-color 0.2s;
+    }
+    .approach-card:hover { border-color: rgba(108,99,255,0.5); }
+    .approach-card h3 {
+      font-size: 12px;
+      font-weight: 700;
+      color: #a78bfa;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .approach-card p {
+      font-size: 13px;
+      color: rgba(255,255,255,0.75);
+      line-height: 1.6;
+    }
+    .approach-card p strong { color: #fff; }
+
+    /* Endpoints list */
+    .endpoints-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .ep-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11.5px;
+      color: rgba(255,255,255,0.7);
+    }
+    .ep-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #6c63ff;
+      flex-shrink: 0;
+    }
+
+    /* Right: screenshot */
+    .screenshot-col {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .screenshot-box {
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.1);
+      flex: 1;
+      position: relative;
+    }
+    .screenshot-box img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: top;
+    }
+    .screenshot-label {
+      font-size: 10.5px;
+      color: rgba(255,255,255,0.4);
+      text-align: center;
+      letter-spacing: 0.5px;
+    }
+
+    /* ── Slide 2 ── */
+    #slide2 {
+      background: linear-gradient(135deg, #0a0a14 0%, #0d1b2a 50%, #0f2027 100%);
+    }
+
+    .slide2-header {
+      padding: 36px 56px 20px;
+      border-bottom: 1px solid rgba(16, 185, 129, 0.2);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+    .badge-green {
+      background: linear-gradient(135deg, #10b981, #34d399);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 5px 14px;
+      border-radius: 20px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    .slide2-title h1 {
+      font-size: 30px;
+      font-weight: 800;
+      background: linear-gradient(90deg, #fff 0%, #34d399 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      line-height: 1.2;
+    }
+    .slide2-title p {
+      color: rgba(255,255,255,0.5);
+      font-size: 13px;
+      margin-top: 6px;
+    }
+
+    .slide2-body {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      padding: 24px 56px;
+      flex: 1;
+    }
+
+    /* Metric cards */
+    .metrics-col { display: flex; flex-direction: column; gap: 14px; }
+
+    .metrics-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+    }
+    .metric-card {
+      background: rgba(16, 185, 129, 0.06);
+      border: 1px solid rgba(16, 185, 129, 0.2);
+      border-radius: 12px;
+      padding: 14px 16px;
+      text-align: center;
+    }
+    .metric-card .value {
+      font-size: 22px;
+      font-weight: 800;
+      color: #34d399;
+      line-height: 1;
+    }
+    .metric-card .unit {
+      font-size: 10px;
+      color: rgba(255,255,255,0.4);
+      margin-top: 2px;
+    }
+    .metric-card .label {
+      font-size: 11px;
+      color: rgba(255,255,255,0.6);
+      margin-top: 6px;
+      font-weight: 600;
+    }
+
+    /* SLA card */
+    .sla-card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(16, 185, 129, 0.15);
+      border-radius: 14px;
+      padding: 16px 20px;
+    }
+    .sla-card h3 {
+      font-size: 12px;
+      font-weight: 700;
+      color: #34d399;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .sla-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 7px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      font-size: 12.5px;
+    }
+    .sla-row:last-child { border-bottom: none; }
+    .sla-row .sla-label { color: rgba(255,255,255,0.6); }
+    .sla-row .sla-val { color: #fff; font-weight: 600; }
+    .sla-pass {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 10px;
+      letter-spacing: 0.5px;
+    }
+
+    /* CI/CD pipeline visual */
+    .pipeline-col { display: flex; flex-direction: column; gap: 12px; }
+
+    .pipeline-card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 14px;
+      padding: 16px 20px;
+    }
+    .pipeline-card h3 {
+      font-size: 12px;
+      font-weight: 700;
+      color: rgba(255,255,255,0.5);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+    }
+    .pipeline-flow {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .pipe-job {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 14px;
+      border-radius: 9px;
+      font-size: 12.5px;
+      font-weight: 600;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.07);
+    }
+    .pipe-job.highlight {
+      background: rgba(16, 185, 129, 0.08);
+      border-color: rgba(16, 185, 129, 0.3);
+      color: #34d399;
+    }
+    .pipe-job .tick { color: #34d399; font-size: 14px; }
+    .pipe-job .dur {
+      margin-left: auto;
+      font-size: 11px;
+      color: rgba(255,255,255,0.4);
+      font-weight: 400;
+    }
+    .pipe-arrow {
+      text-align: center;
+      color: rgba(255,255,255,0.2);
+      font-size: 12px;
+      line-height: 1;
+    }
+    .pipe-sub {
+      margin-left: 24px;
+      padding: 7px 12px;
+      font-size: 11.5px;
+      color: rgba(255,255,255,0.5);
+      background: rgba(255,255,255,0.02);
+      border-radius: 7px;
+      border-left: 2px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .screenshot-box2 {
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.1);
+      flex: 1;
+    }
+    .screenshot-box2 img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: top;
+    }
+
+    /* slide number */
+    .slide-num {
+      position: absolute;
+      bottom: 80px;
+      right: 56px;
+      font-size: 12px;
+      color: rgba(255,255,255,0.2);
+      font-weight: 600;
+      letter-spacing: 1px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════
+     SLIDE 1 — Testing Approach & Setup
+════════════════════════════════════════════════════ -->
+<div class="slide active" id="slide1">
+
+  <div class="slide1-header">
+    <div class="slide1-title">
+      <h1>Load &amp; Performance Testing</h1>
+      <p>SE3112 — Advanced Software Engineering &nbsp;|&nbsp; <strong>Student ID: IT24101022</strong> &nbsp;|&nbsp; Apache JMeter 5.6.3</p>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <span class="badge" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2);">IT24101022</span>
+      <span class="badge">Slide 1 of 2</span>
+    </div>
+  </div>
+
+  <div class="slide1-body">
+
+    <!-- LEFT: Approach -->
+    <div class="approach-col">
+
+      <div class="approach-card">
+        <h3>🎯 Objective</h3>
+        <p>Simulate <strong>110 concurrent users</strong> hitting the API Gateway to verify that all 4 microservices
+          (Identity, Catalog, Order, Reporting) handle high load <strong>without errors or SLA breaches</strong>.</p>
+      </div>
+
+      <div class="approach-card">
+        <h3>⚙️ Test Configuration</h3>
+        <p>
+          <strong>Tool:</strong> Apache JMeter 5.6.3 (Non-GUI / Headless CLI)<br/>
+          <strong>Threads:</strong> 110 virtual users · 10s ramp-up · 5 loops<br/>
+          <strong>Think Time:</strong> 100 – 300 ms random delay (realistic pacing)<br/>
+          <strong>SLA Assertion:</strong> Every request must complete &lt; 1,500 ms
+        </p>
+      </div>
+
+      <div class="approach-card">
+        <h3>🔗 8 Endpoints Tested</h3>
+        <div class="endpoints-grid">
+          <div class="ep-item"><span class="ep-dot"></span>Gateway Health</div>
+          <div class="ep-item"><span class="ep-dot"></span>Identity Health</div>
+          <div class="ep-item"><span class="ep-dot"></span>Catalog Health</div>
+          <div class="ep-item"><span class="ep-dot"></span>Browse Products</div>
+          <div class="ep-item"><span class="ep-dot"></span>Browse Categories</div>
+          <div class="ep-item"><span class="ep-dot"></span>Order Health</div>
+          <div class="ep-item"><span class="ep-dot"></span>Reporting Health</div>
+          <div class="ep-item"><span class="ep-dot"></span>Auth Token Filter</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT: Screenshot -->
+    <div class="screenshot-col">
+      <div class="screenshot-box">
+        <img src="../Performance-Screenshots/05_jmeter_response_time_percentiles.png"
+             alt="JMeter Response Time Percentiles Chart"/>
+      </div>
+      <p class="screenshot-label">📊 JMeter HTML Dashboard — Response Time Percentiles (all endpoints well under SLA)</p>
+    </div>
+
+  </div>
+  <div class="slide-num">01 / 02</div>
+</div>
+
+
+<!-- ════════════════════════════════════════════════════
+     SLIDE 2 — Results & CI/CD Integration
+════════════════════════════════════════════════════ -->
+<div class="slide" id="slide2">
+
+  <div class="slide2-header">
+    <div class="slide2-title">
+      <h1>Results &amp; CI/CD Integration</h1>
+      <p>Peak Load: 110 virtual users &nbsp;|&nbsp; <strong>Student ID: IT24101022</strong> &nbsp;|&nbsp; GitHub Actions automated pipeline</p>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <span class="badge-green" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2);">IT24101022</span>
+      <span class="badge-green">Slide 2 of 2</span>
+    </div>
+  </div>
+
+  <div class="slide2-body">
+
+    <!-- LEFT: Metrics + SLA -->
+    <div class="metrics-col">
+
+      <div class="metrics-row">
+        <div class="metric-card">
+          <div class="value">440<span style="font-size:14px">.97</span></div>
+          <div class="unit">req / sec</div>
+          <div class="label">Throughput</div>
+        </div>
+        <div class="metric-card">
+          <div class="value">7</div>
+          <div class="unit">ms</div>
+          <div class="label">Median Latency</div>
+        </div>
+        <div class="metric-card">
+          <div class="value">0.00</div>
+          <div class="unit">%</div>
+          <div class="label">Error Rate</div>
+        </div>
+      </div>
+
+      <div class="sla-card">
+        <h3>📋 SLA Compliance Report</h3>
+        <div class="sla-row">
+          <span class="sla-label">Total Requests</span>
+          <span class="sla-val">4,400 samples</span>
+          <span class="sla-pass">✓ ALL PASS</span>
+        </div>
+        <div class="sla-row">
+          <span class="sla-label">SLA Threshold</span>
+          <span class="sla-val">&lt; 1,500 ms</span>
+          <span class="sla-pass">✓ MET</span>
+        </div>
+        <div class="sla-row">
+          <span class="sla-label">95th Percentile (p95)</span>
+          <span class="sla-val">28 ms</span>
+          <span class="sla-pass">✓ 53× under SLA</span>
+        </div>
+        <div class="sla-row">
+          <span class="sla-label">APDEX Score</span>
+          <span class="sla-val">0.98+ / 1.00</span>
+          <span class="sla-pass">✓ EXCELLENT</span>
+        </div>
+        <div class="sla-row">
+          <span class="sla-label">SLA Breaches</span>
+          <span class="sla-val">0 out of 4,400</span>
+          <span class="sla-pass">✓ ZERO</span>
+        </div>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:10px; padding: 12px 18px;
+                  background: rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.3);
+                  border-radius: 12px; font-size: 12.5px; color: rgba(255,255,255,0.85);">
+        <span style="font-size:20px;">🟢</span>
+        <div>
+          <strong style="color:#34d399">Author: IT24101022 &nbsp;·&nbsp; Branch: feature/se3112-performance-jmeter</strong>
+          <div style="color:rgba(255,255,255,0.5); font-size:11.5px; margin-top:2px;">
+            Standalone 3-Stage Pipeline &nbsp;·&nbsp; Total Duration: 2m 1s &nbsp;·&nbsp; Status: Success ✅
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT: Live Screenshot of GitHub Actions -->
+    <div class="screenshot-col">
+      <div class="screenshot-box" style="border:1px solid rgba(16,185,129,0.3);">
+        <img src="../Performance-Screenshots/06_github_actions_jmeter_pipeline.png"
+             alt="GitHub Actions JMeter Pipeline by IT24101022" style="object-position: center top;"/>
+      </div>
+      <p class="screenshot-label">🚀 Verified GitHub Actions Pipeline by IT24101022 (Validate → JMeter Load Test → Summary Table)</p>
+    </div>
+
+  </div>
+  <div class="slide-num">02 / 02</div>
+</div>
+
+
+<!-- ── Navigation ── -->
+<nav class="nav">
+  <button class="active" onclick="goTo(1)" id="btn1">Slide 1 — Approach</button>
+  <button onclick="goTo(2)" id="btn2">Slide 2 — Results &amp; CI/CD</button>
+</nav>
+
+<script>
+  function goTo(n) {
+    document.querySelectorAll('.slide').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
+    document.getElementById('slide' + n).classList.add('active');
+    document.getElementById('btn' + n).classList.add('active');
+  }
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') goTo(2);
+    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   goTo(1);
+  });
+</script>
+
+</body>
+</html>
