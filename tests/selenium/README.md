@@ -1,6 +1,6 @@
 # SE3112 — Selenium UI / E2E testing
 
-Owner: **Fill in your name and student ID before submission.**
+Owner: **IT24103271 — J M D K Jayasundara**
 
 Tests operate on the real deployed React frontend and its ASP.NET microservices.
 No Docker, local database, local backend or local frontend server is required.
