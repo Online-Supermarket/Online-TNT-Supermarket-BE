@@ -1,4 +1,4 @@
-FROM nginx:1.31.6-alpine3.24
+FROM nginx:1.31.8-alpine3.24
 
 # Apply Alpine fixes published after the upstream image was built.
 RUN apk upgrade --no-cache
