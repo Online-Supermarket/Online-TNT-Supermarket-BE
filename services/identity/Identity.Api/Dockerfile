@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 COPY . .
 RUN dotnet restore Identity.Api.csproj && dotnet publish Identity.Api.csproj -c Release -o /app/publish --no-restore
