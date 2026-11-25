@@ -1,4 +1,4 @@
-# Marketflow — Sprint 1 and 2 aligned baseline
+# Marketflow â€” Sprint 1 and 2 aligned baseline
 
 Marketflow currently contains the Sprint 1 and 2 application baseline: public product browsing, customer accounts, addresses, basket and checkout, stock-safe orders, Catalog inventory reporting and Order sales reporting. The target design is documented in [Sprint-01-02-Alignment-Plan.md](Sprint-01-02-Alignment-Plan.md).
 
@@ -26,11 +26,12 @@ The services create local development schemas and seed categories at startup. Th
 
 ```bash
 dotnet build Marketflow.slnx
+.\scripts\run-code-quality.ps1 -OpenReport
 cd frontend && npm ci && npm run build
 docker compose config --quiet
 ```
 
-API contracts and test cases are in [docs/API.md](docs/API.md) and [docs/TEST-PLAN.md](docs/TEST-PLAN.md). The current remediation scope, removals and evidence checklist are in [Sprint-01-02-Alignment-Plan.md](Sprint-01-02-Alignment-Plan.md).
+API contracts and test cases are in [docs/API.md](docs/API.md) and [docs/TEST-PLAN.md](docs/TEST-PLAN.md). Code quality, SonarCloud, and coverage metrics guide is in [docs/CODE-QUALITY-AND-METRICS.md](docs/CODE-QUALITY-AND-METRICS.md). The current remediation scope, removals and evidence checklist are in [Sprint-01-02-Alignment-Plan.md](Sprint-01-02-Alignment-Plan.md).
 
 Each service exposes a live OpenAPI document at `/openapi/v1.json` and Swagger UI at `/swagger`. Through the gateway, for example, use `http://localhost:8080/api/catalog/swagger`. The consolidated reviewed contract remains in [docs/openapi/marketflow-sprint-01-02.openapi.yaml](docs/openapi/marketflow-sprint-01-02.openapi.yaml).
 
@@ -38,9 +39,17 @@ Each service exposes a live OpenAPI document at `/openapi/v1.json` and Swagger U
 
 - Sprint 1: [Identity deployment workflow](.github/workflows/deploy-identity.yml) and [Catalog deployment workflow](.github/workflows/deploy-catalog.yml).
 - Sprint 2: [Order deployment workflow](.github/workflows/deploy-order.yml).
+- Code Quality & Metrics: [SonarCloud & Coverage pipeline](.github/workflows/code-quality.yml) (Static analysis, Coverlet, ReportGenerator & SonarCloud).
 
 Each workflow builds and pushes one independently versioned image, deploys it to its own Azure App Service container, and checks `/health/ready`. Configure Azure Container Registry, App Service app names, OpenID Connect and the `staging` GitHub environment secrets before enabling automatic deployment. See [Azure App Service setup](docs/deployment/Azure-App-Service-Setup.md).
 
+
+## Team Members & Individual Contributions
+
+| Student ID | Member Name | Role & Assigned Module | Deliverables & Artifacts |
+| :--- | :--- | :--- | :--- |
+| **IT24101852** | **V.N.Thilanka** | **Code Quality & Metrics (SonarCloud, Roslyn, Coverlet)** | • [Code Quality Pipeline](.github/workflows/code-quality.yml)<br>• [SonarCloud Config](sonar-project.properties)<br>• [Analyzer Config](Directory.Build.props)<br>• [Local Runner](scripts/run-code-quality.ps1)<br>• [Code Quality Guide](docs/CODE-QUALITY-AND-METRICS.md)<br>• [Individual Report](docs/INDIVIDUAL-REPORT-CODE-QUALITY.md) |
 ## Security notes
 
 The checked-in connection strings and seeded credentials are strictly local-development defaults. Set production credentials, `Auth__SigningKey`, `Internal__Key`, `Internal__CatalogKey` and `MARKETFLOW_CORS_ORIGIN` through the deployment secret store. Catalog and Order ask Identity to introspect protected requests, so logout revokes access immediately. Do not expose PostgreSQL, Kafka, internal Catalog reservation routes or backend service ports outside a trusted network.
+

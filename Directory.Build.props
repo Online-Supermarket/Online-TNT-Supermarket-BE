@@ -1,0 +1,10 @@
+<Project>
+  <PropertyGroup>
+    <!-- SE3112 Code Quality & Static Analysis (IT24101852 - V.N.Thilanka) -->
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>Recommended</AnalysisMode>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

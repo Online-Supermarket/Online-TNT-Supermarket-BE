@@ -13,3 +13,7 @@ TestResults/
 
 # Local override files (may reference secrets via env vars)
 docker-compose.override.yml
+
+# Code Quality & SonarCloud artifacts
+QualityReport/
+.sonarqube/
